@@ -1,7 +1,7 @@
 {
-  "name": "novnc-hub",
-  "version": "1.0.0",
-  "description": "Multi-server noVNC Web Portal and Proxy",
+  "name": "remote-hub",
+  "version": "1.1.0",
+  "description": "All-in-one Web Remote Access Gateway (VNC, RDP, and SSH Terminal)",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -9,19 +9,30 @@
     "test": "node --test"
   },
   "keywords": [
+    "remote-hub",
+    "remote-desktop",
     "novnc",
     "vnc",
-    "websockify",
-    "remote-desktop"
+    "rdp",
+    "ironrdp",
+    "ssh",
+    "terminal",
+    "xterm",
+    "websockify"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "@novnc/novnc": "^1.5.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
+    "ironrdp-wasm": "^1.1.0",
+    "memorystore": "^1.6.8",
+    "ssh2": "^1.17.0",
     "ws": "^8.18.0"
   }
 }

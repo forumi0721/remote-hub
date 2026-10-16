@@ -13,12 +13,12 @@ RUN npm ci --only=production
 COPY src/ ./src/
 COPY public/ ./public/
 
-# 설정 파일 저장 볼륨 디렉터리
-RUN mkdir -p /conf.d/novnc-hub
-VOLUME ["/conf.d/novnc-hub"]
+# 설정 파일 저장 볼륨 디렉터리 (기존 novnc-hub 호환 유지)
+RUN mkdir -p /conf.d/remotehub /conf.d/novnc-hub
+VOLUME ["/conf.d/remotehub"]
 
 ENV PORT=8080
-ENV CONFIG_PATH=/conf.d/novnc-hub/config.json
+ENV CONFIG_PATH=/conf.d/remotehub/config.json
 ENV NODE_ENV=production
 
 EXPOSE 8080

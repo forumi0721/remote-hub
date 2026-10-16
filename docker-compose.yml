@@ -1,13 +1,13 @@
 services:
-  novnc-hub:
+  remotehub:
     build: .
-    container_name: novnc-hub
+    container_name: remotehub
     restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
-      - ./config:/conf.d/novnc-hub
+      - ./config:/conf.d/remotehub
     environment:
       - PORT=8080
-      - CONFIG_PATH=/conf.d/novnc-hub/config.json
-      - SESSION_SECRET=novnc-custom-secret-change-me
+      - CONFIG_PATH=/conf.d/remotehub/config.json
+      - SESSION_SECRET=remotehub-custom-secret-change-me

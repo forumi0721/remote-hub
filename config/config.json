@@ -8,10 +8,38 @@
       "id": "srv-muqncfsa-tsz4",
       "name": "테스트 서버 1",
       "host": "127.0.0.1",
-      "port": 5900,
+      "port": 22,
       "password": "",
-      "description": "로컬 VNC",
-      "createdAt": "2026-10-02T07:33:32.266Z"
+      "description": "로컬 SSH 머신",
+      "createdAt": "2026-10-02T07:33:32.266Z",
+      "protocol": "ssh",
+      "username": "forumi0721",
+      "domain": "",
+      "authType": "password",
+      "initialCommand": "",
+      "updatedAt": "2026-10-16T14:49:20.641Z",
+      "group": "홈랩 (HomeLab)",
+      "tags": [
+        "ssh",
+        "linux",
+        "local"
+      ]
+    },
+    {
+      "id": "srv-mvb2t7ac-lcf4",
+      "name": "StoneColdVPN",
+      "protocol": "vnc",
+      "host": "192.168.1.6",
+      "port": 5904,
+      "username": "",
+      "domain": "",
+      "authType": "password",
+      "password": "",
+      "privateKey": "",
+      "passphrase": "",
+      "initialCommand": "",
+      "description": "",
+      "createdAt": "2026-10-16T14:41:52.164Z"
     }
   ]
 }

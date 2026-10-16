@@ -3,39 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>noVNC Console - 원격 데스크톱</title>
+  <title>RemoteHub Console - 올인원 원격 접속</title>
   <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/xterm/css/xterm.css">
   <style>
-    body, html {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background-color: #0b0f19;
-    }
-    #screen {
-      width: 100%;
-      height: calc(100vh - 50px);
-      background-color: #000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-      overflow: auto;
-    }
-    /* noVNC 기본 캔버스 스타일 보정 */
-    #screen > div {
-      margin: auto;
-    }
     .status-indicator {
       display: inline-flex;
       align-items: center;
       gap: 0.4rem;
-      font-size: 0.8rem;
-      padding: 0.2rem 0.6rem;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.5rem;
       border-radius: 9999px;
       font-weight: 500;
+      white-space: nowrap;
     }
     .status-indicator.connected {
       background: rgba(16, 185, 129, 0.2);
@@ -55,63 +35,110 @@
   </style>
 </head>
 <body class="viewer-page">
-  <!-- 상단 컨트롤 툴바 -->
-  <div class="viewer-toolbar">
-    <div class="toolbar-left">
-      <a href="/" class="btn btn-secondary btn-sm" title="서버 목록으로 돌아가기">
-        ← 목록
-      </a>
-      <select id="server-switch" class="server-select" title="서버 즉시 전환">
-        <option value="">서버 선택...</option>
-      </select>
-      <div id="conn-status" class="status-indicator connecting">
-        ● 연결 준비 중...
+  <div class="viewer-layout">
+    <!-- 1. 좌측 열고 닫는 서버 목록 패널 (사이드바) -->
+    <aside id="viewer-sidebar" class="viewer-sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-title">
+          <span class="logo-icon-sm">HUB</span>
+          <span>원격 서버 목록</span>
+        </div>
+        <button id="btn-toggle-sidebar" class="btn-icon" title="패널 닫기">◀</button>
       </div>
-    </div>
+      <div class="sidebar-search">
+        <input type="text" id="sidebar-search-input" placeholder="서버 검색...">
+      </div>
+      <div class="sidebar-servers-list" id="sidebar-servers-list">
+        <!-- 서버 목록 동적 주입 -->
+      </div>
+      <div class="sidebar-footer">
+        <a href="/" class="btn btn-secondary btn-sm" style="width: 100%;">
+          🏠 대시보드로 돌아가기
+        </a>
+      </div>
+    </aside>
 
-    <div class="toolbar-right">
-      <button id="btn-cad" class="btn btn-secondary btn-sm" title="Ctrl+Alt+Del 키 조합 전송">
-        Ctrl+Alt+Del
-      </button>
-      <button id="btn-scale" class="btn btn-secondary btn-sm" title="창 크기에 맞춤 토글">
-        📐 창 맞춤: ON
-      </button>
-      <button id="btn-fullscreen" class="btn btn-secondary btn-sm" title="전체화면">
-        ⛶ 전체화면
-      </button>
-      <button id="btn-reconnect" class="btn btn-primary btn-sm" title="재연결">
-        🔄 재연결
-      </button>
+    <!-- 2. 우측 메인 영역: 상단 탭 바 + 세션 워크스페이스 -->
+    <main class="viewer-main">
+      <header class="viewer-topbar">
+        <div class="topbar-left">
+          <button id="btn-open-sidebar" class="btn-sidebar-toggle" title="서버 목록 열기" style="display: none;">
+            ☰ 서버 목록
+          </button>
+          <!-- 멀티 탭 컨테이너 -->
+          <div id="tabs-container" class="tabs-container"></div>
+        </div>
+
+        <!-- 우측 컨트롤러 (활성 탭 기준 조작) -->
+        <div class="topbar-right">
+          <span id="tab-status" class="status-indicator connecting" style="display: none;">● 준비 중</span>
+          <!-- SSH 터미널 폰트 크기 조절 컨트롤 -->
+          <div id="ssh-font-controls" class="ssh-font-controls" style="display: none;">
+            <button id="btn-font-dec" class="btn btn-secondary btn-xs" title="글꼴 작게 (Ctrl + -)">A-</button>
+            <span id="font-size-display" class="font-size-display" title="현재 글꼴 크기">14px</span>
+            <button id="btn-font-inc" class="btn btn-secondary btn-xs" title="글꼴 크게 (Ctrl + +)">A+</button>
+          </div>
+          <button id="btn-cad" class="btn btn-secondary btn-sm" title="Ctrl+Alt+Del" style="display: none;">Ctrl+Alt+Del</button>
+          <button id="btn-scale" class="btn btn-secondary btn-sm" title="창 크기에 맞춤" style="display: none;">📐 창 맞춤: ON</button>
+          <button id="btn-fullscreen" class="btn btn-secondary btn-sm" title="전체화면">⛶ 전체화면</button>
+          <button id="btn-reconnect" class="btn btn-primary btn-sm" title="현재 세션 재연결">🔄 재연결</button>
+        </div>
+      </header>
+
+      <!-- 3. 멀티 세션 워크스페이스 -->
+      <div id="sessions-workspace" class="sessions-workspace">
+        <div class="empty-workspace" id="empty-workspace">
+          <h3>열려 있는 원격 세션이 없습니다</h3>
+          <p>좌측 서버 목록 패널에서 접속할 서버를 클릭하여 새 탭을 열어보세요.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 탭 우클릭 컨텍스트 메뉴 -->
+  <div id="tab-context-menu" class="tab-context-menu" style="display: none;">
+    <div class="context-menu-item" id="ctx-duplicate">
+      <span>📋</span> 세션 복제 (새 탭으로 열기)
+    </div>
+    <div class="context-menu-item" id="ctx-reconnect">
+      <span>🔄</span> 세션 재연결 (이어받기)
+    </div>
+    <div class="context-menu-item" id="ctx-fresh">
+      <span>🆕</span> 세션 새로 시작 (신규 접속)
+    </div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item" id="ctx-close">
+      <span>✕</span> 탭 닫기 (세션 종료)
+    </div>
+    <div class="context-menu-item" id="ctx-close-others">
+      <span>🧹</span> 다른 탭 모두 닫기
     </div>
   </div>
 
-  <!-- 메인 VNC 캔버스 렌더링 영역 -->
-  <div id="screen"></div>
-
-  <!-- VNC 패스워드 입력 모달 (비밀번호 미설정/불일치 시 표시) -->
+  <!-- 비밀번호 입력 모달 (비밀번호 미설정/불일치 시 표시) -->
   <div id="modal-password" class="modal-overlay">
     <div class="modal-content" style="max-width: 380px;">
       <div class="modal-header">
-        <h2>VNC 비밀번호 필요</h2>
+        <h2 id="modal-password-title">비밀번호 입력 필요</h2>
       </div>
       <form id="form-password">
         <div class="modal-body">
-          <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem;">
-            이 VNC 서버에 접속하려면 패스워드가 필요합니다.
+          <p id="modal-password-msg" style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem;">
+            이 원격 서버에 접속하려면 비밀번호가 필요합니다.
           </p>
           <div class="form-group">
-            <input type="password" id="input-vnc-pw" required placeholder="VNC 비밀번호" autofocus>
+            <input type="password" id="input-vnc-pw" required placeholder="비밀번호" autofocus>
           </div>
         </div>
         <div class="modal-footer">
-          <a href="/" class="btn btn-secondary">취소</a>
+          <button type="button" class="btn btn-secondary" id="btn-cancel-pw">취소</button>
           <button type="submit" class="btn btn-primary">연결</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- noVNC ES Module 구동 스크립트 -->
+  <!-- 통합 멀티 탭 뷰어 스크립트 -->
   <script type="module" src="/js/viewer.js"></script>
 </body>
 </html>

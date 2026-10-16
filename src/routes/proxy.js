@@ -1,17 +1,17 @@
 const net = require('net');
 const configManager = require('../config');
 
-function handleWsConnection(ws, req) {
+function handleWsConnection(ws, req, serverOverride) {
   const parsedUrl = new URL(req.url, 'http://localhost');
   const serverId = parsedUrl.searchParams.get('serverId');
 
-  if (!serverId) {
+  if (!serverId && !serverOverride) {
     console.warn('[Proxy] WebSocket connection rejected: missing serverId parameter');
     ws.close(1008, 'Missing serverId parameter');
     return;
   }
 
-  const server = configManager.getServer(serverId);
+  const server = serverOverride || configManager.getServer(serverId);
   if (!server) {
     console.warn(`[Proxy] Server not found for ID: ${serverId}`);
     ws.close(1008, 'Server configuration not found');

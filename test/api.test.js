@@ -292,3 +292,246 @@ test('3. WebSocket 프록시 & 인증 차단: 통합 테스트', async (t) => {
   });
 });
 
+test('4. VNC/RDP 프로토콜 기본값 호환성 및 서버 순서 변경(Reorder) 테스트', async (t) => {
+  if (fs.existsSync(TEST_CONFIG_PATH)) {
+    fs.unlinkSync(TEST_CONFIG_PATH);
+  }
+
+  const app = setupTestApp();
+  const server = http.createServer(app);
+  await new Promise(res => server.listen(0, res));
+
+  t.after(() => {
+    server.close();
+    if (fs.existsSync(TEST_CONFIG_PATH)) {
+      try { fs.unlinkSync(TEST_CONFIG_PATH); } catch (_) {}
+    }
+  });
+
+  // A. 프로토콜 생략 시 기본값 'vnc' 적용 확인 (하위 호환성)
+  const vncServer = await makeRequest(server, { path: '/api/servers', method: 'POST' }, {
+    name: '기존 스타일 VNC 서버',
+    host: '10.0.0.1',
+    port: 5900
+  });
+  assert.equal(vncServer.status, 201);
+  assert.equal(vncServer.body.protocol, 'vnc');
+  assert.equal(vncServer.body.port, 5900);
+
+  // B. RDP 서버 등록 확인 (기본 포트 3389, username, domain)
+  const rdpServer = await makeRequest(server, { path: '/api/servers', method: 'POST' }, {
+    name: '신규 RDP 서버',
+    protocol: 'rdp',
+    host: '10.0.0.2',
+    username: 'Administrator',
+    domain: 'WORKGROUP',
+    password: 'windows_secret'
+  });
+  assert.equal(rdpServer.status, 201);
+  assert.equal(rdpServer.body.protocol, 'rdp');
+  assert.equal(rdpServer.body.port, 3389);
+  assert.equal(rdpServer.body.username, 'Administrator');
+  assert.equal(rdpServer.body.domain, 'WORKGROUP');
+
+  // C. 세 번째 서버 추가
+  const thirdServer = await makeRequest(server, { path: '/api/servers', method: 'POST' }, {
+    name: '세 번째 VNC 서버',
+    host: '10.0.0.3'
+  });
+  assert.equal(thirdServer.status, 201);
+
+  // D. 서버 목록 조회 및 순서 확인
+  const listBefore = await makeRequest(server, { path: '/api/servers' });
+  assert.equal(listBefore.status, 200);
+  assert.equal(listBefore.body.length, 3);
+  assert.equal(listBefore.body[0].id, vncServer.body.id);
+  assert.equal(listBefore.body[1].id, rdpServer.body.id);
+  assert.equal(listBefore.body[2].id, thirdServer.body.id);
+
+  // E. 순서 변경 요청 (thirdServer -> rdpServer -> vncServer)
+  const reorderedIds = [thirdServer.body.id, rdpServer.body.id, vncServer.body.id];
+  const reorderRes = await makeRequest(server, { path: '/api/servers/reorder', method: 'PUT' }, {
+    serverIds: reorderedIds
+  });
+  assert.equal(reorderRes.status, 200);
+  assert.equal(reorderRes.body.length, 3);
+  assert.equal(reorderRes.body[0].id, thirdServer.body.id);
+  assert.equal(reorderRes.body[1].id, rdpServer.body.id);
+  assert.equal(reorderRes.body[2].id, vncServer.body.id);
+
+  // F. 변경된 순서가 영속적으로 유지되는지 GET으로 재확인
+  const listAfter = await makeRequest(server, { path: '/api/servers' });
+  assert.equal(listAfter.status, 200);
+  assert.equal(listAfter.body[0].id, thirdServer.body.id);
+  assert.equal(listAfter.body[1].id, rdpServer.body.id);
+  assert.equal(listAfter.body[2].id, vncServer.body.id);
+
+  // G. RDP 서버 상세/접속 정보 조회 시 username, domain, protocol 정상 반환 확인
+  const rdpConn = await makeRequest(server, { path: `/api/servers/${rdpServer.body.id}/connection` });
+  assert.equal(rdpConn.status, 200);
+  assert.equal(rdpConn.body.protocol, 'rdp');
+  assert.equal(rdpConn.body.username, 'Administrator');
+  assert.equal(rdpConn.body.domain, 'WORKGROUP');
+  assert.equal(rdpConn.body.password, 'windows_secret');
+});
+
+test('5. SSH 터미널 서버 등록, Key 인증, 시작 명령(initialCommand) 검증 테스트', async (t) => {
+  if (fs.existsSync(TEST_CONFIG_PATH)) {
+    fs.unlinkSync(TEST_CONFIG_PATH);
+  }
+
+  const app = setupTestApp();
+  const server = http.createServer(app);
+  await new Promise(res => server.listen(0, res));
+
+  t.after(() => {
+    server.close();
+    if (fs.existsSync(TEST_CONFIG_PATH)) {
+      try { fs.unlinkSync(TEST_CONFIG_PATH); } catch (_) {}
+    }
+  });
+
+  // A. SSH 개인키 인증 및 tmux 시작 명령 서버 등록
+  const sshServer = await makeRequest(server, { path: '/api/servers', method: 'POST' }, {
+    name: 'Linux 배포 서버 (SSH Key)',
+    protocol: 'ssh',
+    host: '10.0.0.50',
+    port: 2222,
+    username: 'ubuntu',
+    authType: 'key',
+    privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nMOCK_KEY_DATA\n-----END OPENSSH PRIVATE KEY-----',
+    passphrase: 'key_passphrase_xyz',
+    initialCommand: 'tmux new -A -s remotehub',
+    description: 'tmux 세션 자동 연결'
+  });
+
+  assert.equal(sshServer.status, 201);
+  assert.equal(sshServer.body.protocol, 'ssh');
+  assert.equal(sshServer.body.port, 2222);
+  assert.equal(sshServer.body.username, 'ubuntu');
+  assert.equal(sshServer.body.authType, 'key');
+  assert.equal(sshServer.body.initialCommand, 'tmux new -A -s remotehub');
+
+  // B. 목록 조회 시 개인키 내용 마스킹 확인 (hasPrivateKey = true, privateKey 노출 방지)
+  const listRes = await makeRequest(server, { path: '/api/servers' });
+  assert.equal(listRes.status, 200);
+  assert.equal(listRes.body.length, 1);
+  const item = listRes.body[0];
+  assert.equal(item.protocol, 'ssh');
+  assert.equal(item.hasPrivateKey, true);
+  assert.equal(item.privateKey, undefined);
+  assert.equal(item.initialCommand, 'tmux new -A -s remotehub');
+
+  // C. 접속 상세 조회 시 접속에 필요한 Key 및 시작 명령 반환 확인
+  const connRes = await makeRequest(server, { path: `/api/servers/${sshServer.body.id}/connection` });
+  assert.equal(connRes.status, 200);
+  assert.equal(connRes.body.authType, 'key');
+  assert.ok(connRes.body.privateKey.includes('BEGIN OPENSSH PRIVATE KEY'));
+  assert.equal(connRes.body.passphrase, 'key_passphrase_xyz');
+  assert.equal(connRes.body.initialCommand, 'tmux new -A -s remotehub');
+});
+
+test('6. 서버 그룹(Group) 및 태그(Tags) 등록, 수정, 목록 조회 테스트', async (t) => {
+  if (fs.existsSync(TEST_CONFIG_PATH)) {
+    fs.unlinkSync(TEST_CONFIG_PATH);
+  }
+
+  const app = setupTestApp();
+  const server = http.createServer(app);
+  await new Promise(res => server.listen(0, res));
+
+  t.after(() => {
+    server.close();
+    if (fs.existsSync(TEST_CONFIG_PATH)) {
+      try { fs.unlinkSync(TEST_CONFIG_PATH); } catch (_) {}
+    }
+  });
+
+  // A. 그룹 및 태그(쉼표 구분 문자열) 등록
+  const createRes = await makeRequest(server, { path: '/api/servers', method: 'POST' }, {
+    name: 'DB 운영 서버',
+    protocol: 'ssh',
+    host: '10.0.1.10',
+    port: 22,
+    username: 'root',
+    group: '운영 (Production)',
+    tags: 'linux, database, postgresql, #prod'
+  });
+
+  assert.equal(createRes.status, 201);
+  assert.equal(createRes.body.group, '운영 (Production)');
+  assert.deepEqual(createRes.body.tags, ['linux', 'database', 'postgresql', 'prod']);
+
+  // B. 목록 조회 시 group 및 tags 포함 확인
+  const listRes = await makeRequest(server, { path: '/api/servers' });
+  assert.equal(listRes.status, 200);
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].group, '운영 (Production)');
+  assert.deepEqual(listRes.body[0].tags, ['linux', 'database', 'postgresql', 'prod']);
+
+  // C. 서버 정보 수정 (배열 형태 태그 및 그룹 변경)
+  const updateRes = await makeRequest(server, { path: `/api/servers/${createRes.body.id}`, method: 'PUT' }, {
+    name: 'DB 운영 서버 (Master)',
+    protocol: 'ssh',
+    host: '10.0.1.10',
+    port: 22,
+    username: 'root',
+    group: 'DB 클러스터',
+    tags: ['db', 'master', 'ha']
+  });
+
+  assert.equal(updateRes.status, 200);
+  assert.equal(updateRes.body.group, 'DB 클러스터');
+  assert.deepEqual(updateRes.body.tags, ['db', 'master', 'ha']);
+
+  // D. 접속 상세 정보 조회 시 group 및 tags 확인
+  const connRes = await makeRequest(server, { path: `/api/servers/${createRes.body.id}/connection` });
+  assert.equal(connRes.status, 200);
+  assert.equal(connRes.body.group, 'DB 클러스터');
+  assert.deepEqual(connRes.body.tags, ['db', 'master', 'ha']);
+});
+
+test('7. SSH 영구 세션 조회(GET /api/sessions) 및 명시적 종료(DELETE /api/sessions/:key) 테스트', async (t) => {
+  const { activeSshSessions } = require('../src/routes/ssh-proxy');
+  const app = setupTestApp();
+  const server = http.createServer(app);
+  await new Promise(res => server.listen(0, res));
+
+  t.after(() => {
+    server.close();
+    if (fs.existsSync(TEST_CONFIG_PATH)) {
+      try { fs.unlinkSync(TEST_CONFIG_PATH); } catch (_) {}
+    }
+  });
+
+  const testKey = 'test_session_key_123';
+  let destroyed = false;
+  activeSshSessions.set(testKey, {
+    key: testKey,
+    server: { id: 'srv-test', name: 'Mock Server' },
+    createdAt: Date.now(),
+    attachedWs: null,
+    lastCols: 80,
+    lastRows: 24,
+    destroy: () => {
+      destroyed = true;
+      activeSshSessions.delete(testKey);
+    }
+  });
+
+  // A. 세션 목록 조회 확인
+  const listRes = await makeRequest(server, { path: '/api/sessions' });
+  assert.equal(listRes.status, 200);
+  assert.ok(listRes.body.sessions.some(s => s.key === testKey));
+
+  // B. 세션 삭제(DELETE) 요청 확인
+  const delRes = await makeRequest(server, { path: `/api/sessions/${testKey}`, method: 'DELETE' });
+  assert.equal(delRes.status, 200);
+  assert.equal(delRes.body.success, true);
+  assert.equal(destroyed, true);
+  assert.equal(activeSshSessions.has(testKey), false);
+});
+
+
+
+

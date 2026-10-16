@@ -104,7 +104,7 @@ router.get('/servers', requireAuth, (req, res) => {
   res.json(servers);
 });
 
-// 6. 서버 상세 및 접속 정보 조회 (패스워드 포함)
+// 6. 서버 상세 및 접속 정보 조회 (패스워드/키 포함)
 router.get('/servers/:id/connection', requireAuth, (req, res) => {
   const server = configManager.getServer(req.params.id);
   if (!server) {
@@ -113,17 +113,45 @@ router.get('/servers/:id/connection', requireAuth, (req, res) => {
   res.json({
     id: server.id,
     name: server.name,
+    protocol: server.protocol || 'vnc',
+    group: server.group || '',
+    tags: server.tags || [],
     host: server.host,
     port: server.port,
+    username: server.username || '',
+    domain: server.domain || '',
+    authType: server.authType || 'password',
+    initialCommand: server.initialCommand || '',
     hasPassword: Boolean(server.password && server.password.length > 0),
+    hasPrivateKey: Boolean(server.privateKey && server.privateKey.length > 0),
     password: server.password || '',
+    privateKey: server.privateKey || '',
+    passphrase: server.passphrase || '',
     description: server.description
   });
 });
 
-// 7. 신규 서버 등록
+// 7. 서버 출력 순서 변경 (반드시 :id 라우트보다 위에 위치해야 함)
+router.put('/servers/reorder', requireAuth, (req, res) => {
+  const { serverIds } = req.body;
+  if (!Array.isArray(serverIds)) {
+    return res.status(400).json({ error: 'serverIds 배열이 필요합니다.' });
+  }
+
+  try {
+    const updatedServers = configManager.reorderServers(serverIds);
+    res.json(updatedServers);
+  } catch (err) {
+    res.status(500).json({ error: '서버 순서 변경 실패: ' + err.message });
+  }
+});
+
+// 8. 신규 서버 등록
 router.post('/servers', requireAuth, (req, res) => {
-  const { name, host, port, password, description } = req.body;
+  const {
+    name, protocol, group, tags, host, port, username, domain,
+    authType, password, privateKey, passphrase, initialCommand, description
+  } = req.body;
   if (!name || !host) {
     return res.status(400).json({ error: '서버 이름과 호스트 주소(IP 또는 도메인)는 필수입니다.' });
   }
@@ -131,9 +159,18 @@ router.post('/servers', requireAuth, (req, res) => {
   try {
     const created = configManager.addServer({
       name,
+      protocol,
+      group,
+      tags,
       host,
-      port: port || 5900,
+      port: port ? parseInt(port, 10) : undefined,
+      username,
+      domain,
+      authType,
       password: password || '',
+      privateKey: privateKey || '',
+      passphrase: passphrase || '',
+      initialCommand: initialCommand || '',
       description: description || ''
     });
     res.status(201).json(created);
@@ -142,16 +179,28 @@ router.post('/servers', requireAuth, (req, res) => {
   }
 });
 
-// 8. 서버 수정
+// 9. 서버 수정
 router.put('/servers/:id', requireAuth, (req, res) => {
   const { id } = req.params;
-  const { name, host, port, password, description } = req.body;
+  const {
+    name, protocol, group, tags, host, port, username, domain,
+    authType, password, privateKey, passphrase, initialCommand, description
+  } = req.body;
 
   const updated = configManager.updateServer(id, {
     name,
+    protocol,
+    group,
+    tags,
     host,
-    port,
+    port: port ? parseInt(port, 10) : undefined,
+    username,
+    domain,
+    authType,
     password,
+    privateKey,
+    passphrase,
+    initialCommand,
     description
   });
 
@@ -162,7 +211,7 @@ router.put('/servers/:id', requireAuth, (req, res) => {
   res.json(updated);
 });
 
-// 9. 서버 삭제
+// 10. 서버 삭제
 router.delete('/servers/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const deleted = configManager.deleteServer(id);
@@ -207,6 +256,41 @@ router.get('/servers/:id/ping', requireAuth, (req, res) => {
   socket.on('timeout', () => {
     finish(false, 'Connection timed out (2000ms)');
   });
+});
+
+// 12. 현재 실행 중인 백엔드 영구 세션 목록 조회
+router.get('/sessions', requireAuth, (req, res) => {
+  const { activeSshSessions } = require('./ssh-proxy');
+  const sessionsList = [];
+  if (activeSshSessions) {
+    for (const [key, sess] of activeSshSessions.entries()) {
+      sessionsList.push({
+        key,
+        serverId: sess.server.id,
+        serverName: sess.server.name,
+        attached: Boolean(sess.attachedWs && sess.attachedWs.readyState === 1),
+        createdAt: sess.createdAt,
+        lastCols: sess.lastCols,
+        lastRows: sess.lastRows
+      });
+    }
+  }
+  res.json({
+    total: sessionsList.length,
+    sessions: sessionsList
+  });
+});
+
+// 13. 백엔드 영구 세션 명시적 종료
+router.delete('/sessions/:key', requireAuth, (req, res) => {
+  const { activeSshSessions } = require('./ssh-proxy');
+  const { key } = req.params;
+  if (activeSshSessions && activeSshSessions.has(key)) {
+    const session = activeSshSessions.get(key);
+    session.destroy();
+    return res.json({ success: true, message: '세션이 완전히 종료되었습니다.' });
+  }
+  res.json({ success: true, message: '이미 종료되었거나 존재하지 않는 세션입니다.' });
 });
 
 module.exports = router;

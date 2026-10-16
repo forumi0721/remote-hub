@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>noVNC Hub - 원격 서버 관리 포털</title>
+  <title>Remote Hub - VNC & RDP 원격 서버 관리 포털</title>
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
   <header>
     <div class="logo-area">
-      <div class="logo-icon">VNC</div>
+      <div class="logo-icon">HUB</div>
       <div class="logo-text">
-        <h1>noVNC Hub</h1>
-        <span>중앙 집중형 원격 서버 관리 포털</span>
+        <h1>Remote Hub</h1>
+        <span>VNC & RDP 통합 원격 데스크톱 포털</span>
       </div>
     </div>
     <div class="header-actions">
@@ -28,20 +28,23 @@
   <main class="container">
     <div class="controls-bar">
       <div class="search-box">
-        <input type="text" id="search-input" placeholder="서버 이름, 호스트, 설명으로 검색...">
+        <input type="text" id="search-input" placeholder="서버 이름, 호스트, 그룹, 태그(#)로 검색...">
       </div>
       <div>
         <button id="btn-open-add-server" class="btn btn-primary">
-          ➕ 새 VNC 서버 추가
+          ➕ 새 원격 서버 추가
         </button>
       </div>
     </div>
 
+    <!-- 그룹 필터 탭 바 -->
+    <div id="group-filter-bar" class="group-filter-bar" style="display: none;"></div>
+
     <!-- 서버 카드 그리드 -->
     <div id="servers-grid" class="servers-grid">
       <div class="empty-state">
-        <h3>등록된 VNC 서버가 없습니다.</h3>
-        <p>상단의 "새 VNC 서버 추가" 버튼을 눌러 원격 데스크톱을 등록해 보세요.</p>
+        <h3>등록된 원격 서버가 없습니다.</h3>
+        <p>상단의 "새 원격 서버 추가" 버튼을 눌러 VNC 또는 RDP 서버를 등록해 보세요.</p>
         <button class="btn btn-primary" onclick="openAddServerModal()">서버 추가하기</button>
       </div>
     </div>
@@ -51,15 +54,32 @@
   <div id="modal-server" class="modal-overlay">
     <div class="modal-content">
       <div class="modal-header">
-        <h2 id="modal-server-title">VNC 서버 추가</h2>
+        <h2 id="modal-server-title">원격 서버 추가</h2>
         <button class="close-btn" onclick="closeModal('modal-server')">&times;</button>
       </div>
       <form id="form-server">
         <input type="hidden" id="server-id">
         <div class="modal-body">
           <div class="form-group">
+            <label>접속 프로토콜 *</label>
+            <div class="protocol-select-group">
+              <label class="protocol-radio-label">
+                <input type="radio" name="server-protocol" value="vnc" checked>
+                <span>🖥️ VNC</span>
+              </label>
+              <label class="protocol-radio-label">
+                <input type="radio" name="server-protocol" value="rdp">
+                <span>🪟 RDP</span>
+              </label>
+              <label class="protocol-radio-label">
+                <input type="radio" name="server-protocol" value="ssh">
+                <span>💻 SSH 터미널</span>
+              </label>
+            </div>
+          </div>
+          <div class="form-group">
             <label for="server-name">서버 이름 *</label>
-            <input type="text" id="server-name" required placeholder="예: 개발용 Ubuntu 데스크톱">
+            <input type="text" id="server-name" required placeholder="예: 개발용 Ubuntu, Windows 또는 원격 Linux">
           </div>
           <div class="form-row">
             <div class="form-group" style="flex: 2;">
@@ -67,17 +87,95 @@
               <input type="text" id="server-host" required placeholder="예: 192.168.1.10">
             </div>
             <div class="form-group" style="flex: 1;">
-              <label for="server-port">VNC 포트 *</label>
+              <label for="server-port" id="label-server-port">포트 *</label>
               <input type="number" id="server-port" value="5900" required placeholder="5900">
             </div>
           </div>
-          <div class="form-group">
-            <label for="server-password">VNC 비밀번호 (선택사항)</label>
+
+          <!-- RDP / SSH 공통 사용자명 -->
+          <div id="credential-user-group" style="display: none;">
+            <div class="form-row">
+              <div class="form-group" style="flex: 1;">
+                <label for="server-username" id="label-server-username">사용자 이름 (Username)</label>
+                <input type="text" id="server-username" placeholder="예: root 또는 Administrator">
+              </div>
+              <div class="form-group" style="flex: 1;" id="group-server-domain">
+                <label for="server-domain">도메인 (Domain, 선택사항)</label>
+                <input type="text" id="server-domain" placeholder="예: CORP">
+              </div>
+            </div>
+          </div>
+
+          <!-- SSH 전용 인증 방식 (비밀번호 vs 개인키) -->
+          <div id="ssh-auth-type-group" style="display: none; margin-bottom: 1rem;">
+            <label>SSH 인증 방식</label>
+            <div style="display: flex; gap: 1rem; margin-top: 0.35rem;">
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 0.4rem;">
+                <input type="radio" name="ssh-auth-type" value="password" checked> 비밀번호
+              </label>
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 0.4rem;">
+                <input type="radio" name="ssh-auth-type" value="key"> SSH 개인키 (Private Key)
+              </label>
+            </div>
+          </div>
+
+          <!-- 비밀번호 입력 필드 -->
+          <div class="form-group" id="group-server-password">
+            <label for="server-password" id="label-server-password">접속 비밀번호 (선택사항)</label>
             <input type="password" id="server-password" placeholder="비밀번호가 있는 경우 입력">
             <small id="server-pw-hint" style="display:none; color:var(--text-muted); font-size:0.75rem; margin-top:4px;">
               * 변경할 때만 새로 입력하세요. (비워두면 기존 비밀번호 유지)
             </small>
           </div>
+
+          <!-- SSH 개인키 입력 필드 -->
+          <div id="ssh-key-fields" style="display: none;">
+            <div class="form-group">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+                <label for="server-private-key" style="margin-bottom: 0;">SSH 개인키 (PEM / OpenSSH)</label>
+                <label class="btn-icon" style="cursor: pointer; font-size: 0.75rem;" title="키 파일 불러오기">
+                  📁 파일 불러오기
+                  <input type="file" id="input-key-file" style="display: none;">
+                </label>
+              </div>
+              <textarea id="server-private-key" class="code-textarea" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY----- ..."></textarea>
+              <small id="server-key-hint" style="display:none; color:var(--text-muted); font-size:0.75rem; margin-top:4px;">
+                * 변경할 때만 새로 입력하세요. (비워두면 기존 개인키 유지)
+              </small>
+            </div>
+            <div class="form-group">
+              <label for="server-passphrase">개인키 패스프레이즈 (암호화된 키인 경우)</label>
+              <input type="password" id="server-passphrase" placeholder="비어있으면 무암호 키">
+            </div>
+          </div>
+
+          <!-- SSH 시작 시 자동 실행 명령 (tmux, screen, termux 등) -->
+          <div id="ssh-startup-fields" style="display: none;">
+            <div class="form-group">
+              <label for="server-initial-cmd">시작 시 자동 실행 명령 (Initial Command)</label>
+              <input type="text" id="server-initial-cmd" placeholder="예: tmux new -A -s remotehub">
+              <div class="cmd-presets">
+                <span style="font-size: 0.75rem; color: var(--text-muted); align-self: center;">프리셋:</span>
+                <button type="button" class="cmd-preset-btn" onclick="setCmdPreset('tmux new -A -s remotehub')">⚡ tmux</button>
+                <button type="button" class="cmd-preset-btn" onclick="setCmdPreset('screen -xR remotehub')">⚡ screen</button>
+                <button type="button" class="cmd-preset-btn" onclick="setCmdPreset('bash')">📱 termux</button>
+                <button type="button" class="cmd-preset-btn" onclick="setCmdPreset('htop || top')">📊 htop</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group" style="flex: 1;">
+              <label for="server-group">그룹 분류 (Group)</label>
+              <input type="text" id="server-group" list="group-datalist" placeholder="예: 운영, 개발, 홈랩 등">
+              <datalist id="group-datalist"></datalist>
+            </div>
+            <div class="form-group" style="flex: 1;">
+              <label for="server-tags">태그 (Tags, 쉼표 구분)</label>
+              <input type="text" id="server-tags" placeholder="예: linux, db, gpu">
+            </div>
+          </div>
+
           <div class="form-group">
             <label for="server-desc">설명 / 비고</label>
             <textarea id="server-desc" rows="2" placeholder="용도, 사양, 담당자 등"></textarea>
@@ -134,12 +232,12 @@
   <div id="modal-login" class="modal-overlay">
     <div class="modal-content" style="max-width: 400px;">
       <div class="modal-header">
-        <h2>noVNC Hub 로그인</h2>
+        <h2>RemoteHub 로그인</h2>
       </div>
       <form id="form-login">
         <div class="modal-body">
           <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
-            서버 목록 및 VNC 콘솔에 접근하려면 마스터 비밀번호를 입력해 주세요.
+            서버 목록 및 원격 콘솔에 접근하려면 마스터 비밀번호를 입력해 주세요.
           </p>
           <div class="form-group">
             <label for="login-password">마스터 비밀번호</label>
