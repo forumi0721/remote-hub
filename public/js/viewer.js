@@ -785,6 +785,9 @@ formPassword.addEventListener('submit', (e) => {
   if (!session) return;
 
   if (session.engine === 'vnc' && session.instance) {
+    if (session.serverInfo) {
+      session.serverInfo.password = pw;
+    }
     updateSessionStatus(session, 'connecting', '비밀번호 전송 중...');
     session.instance.sendCredentials({ password: pw });
   } else if (session.engine === 'rdp') {
@@ -836,20 +839,28 @@ btnFullscreen.addEventListener('click', () => {
   }
 });
 
-function reconnectSession(tabId, forceNew = false) {
+async function reconnectSession(tabId, forceNew = false) {
   const session = sessions.get(tabId);
   if (!session) return;
+
+  // 최신 접속 정보(비밀번호, 호스트 등) 동기화
+  try {
+    const res = await fetch(`/api/servers/${session.serverId}/connection`);
+    if (res.ok) {
+      session.serverInfo = await res.json();
+    }
+  } catch (_) {}
 
   session.forceNew = forceNew;
   destroySession(session);
   session.viewEl.innerHTML = '';
 
   if (session.engine === 'ssh') {
-    startSshSession(session);
+    await startSshSession(session);
   } else if (session.engine === 'rdp') {
-    startRdpSession(session);
+    await startRdpSession(session);
   } else {
-    startVncSession(session);
+    await startVncSession(session);
   }
 }
 

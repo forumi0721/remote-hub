@@ -319,8 +319,9 @@ function handleSshConnection(ws, req, server) {
   const existingSession = activeSshSessions.get(sessionKey);
 
   if (existingSession && !existingSession.isDestroyed) {
-    if (forceNew) {
-      console.log(`[SSH:${server.name}] forceNew requested. Terminating previous session ${sessionKey}`);
+    const isViable = existingSession.isReady && existingSession.sshStream && !existingSession.sshStream.destroyed;
+    if (forceNew || !isViable) {
+      console.log(`[SSH:${server.name}] Existing session ${sessionKey} is ${forceNew ? 'force-renewed' : 'not viable'}. Re-creating.`);
       existingSession.destroy();
     } else {
       existingSession.attach(ws);
