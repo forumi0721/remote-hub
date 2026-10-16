@@ -40,6 +40,17 @@
     <!-- 그룹 필터 탭 바 -->
     <div id="group-filter-bar" class="group-filter-bar" style="display: none;"></div>
 
+    <!-- 활성 세션 알림 및 빠른 복원 배너 -->
+    <div id="active-sessions-banner" class="active-sessions-summary-bar" style="display: none;">
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span class="active-pulse-dot">●</span>
+        <span id="active-sessions-summary-text">현재 백그라운드에 유지 중인 활성 세션이 있습니다.</span>
+      </div>
+      <a href="/viewer.html" class="btn btn-continue btn-sm">
+        ▶️ 전체 세션 작업창 열기
+      </a>
+    </div>
+
     <!-- 서버 카드 그리드 -->
     <div id="servers-grid" class="servers-grid">
       <div class="empty-state">

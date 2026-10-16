@@ -1,5 +1,6 @@
 // 상태 저장
 let serversData = [];
+let activeSessionsData = [];
 let currentGroupFilter = 'ALL';
 let appStatus = {
   authEnabled: false,
@@ -53,16 +54,55 @@ async function loadServers() {
   if (!ok) return;
 
   try {
-    const res = await fetch('/api/servers');
-    if (res.status === 401) {
+    const [serversRes, sessionsRes] = await Promise.all([
+      fetch('/api/servers'),
+      fetch('/api/sessions').catch(() => null)
+    ]);
+
+    if (serversRes.status === 401) {
       openModal('modal-login');
       return;
     }
-    serversData = await res.json();
+    serversData = await serversRes.json();
+    if (sessionsRes && sessionsRes.ok) {
+      const data = await sessionsRes.json();
+      activeSessionsData = data.sessions || [];
+    } else {
+      activeSessionsData = [];
+    }
+
+    updateActiveSessionsBanner();
     updateGroupUI();
     filterAndRenderServers();
   } catch (err) {
     console.error('Failed to load servers:', err);
+  }
+}
+
+// 활성 세션 요약 배너 업데이트
+function updateActiveSessionsBanner() {
+  const banner = document.getElementById('active-sessions-banner');
+  const bannerText = document.getElementById('active-sessions-summary-text');
+  if (!banner) return;
+
+  let openTabs = [];
+  try {
+    openTabs = JSON.parse(localStorage.getItem('remotehub_open_tabs') || '[]');
+  } catch (_) {}
+
+  const activeServerIds = new Set([
+    ...activeSessionsData.map(s => s.serverId),
+    ...openTabs.map(t => t.serverId)
+  ]);
+
+  if (activeServerIds.size === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  banner.style.display = 'flex';
+  if (bannerText) {
+    bannerText.innerHTML = `현재 <strong>${activeServerIds.size}개 서버</strong>의 작업 세션이 백그라운드에 유지되고 있습니다.`;
   }
 }
 
@@ -199,6 +239,11 @@ function renderServers(servers) {
     return;
   }
 
+  let openTabs = [];
+  try {
+    openTabs = JSON.parse(localStorage.getItem('remotehub_open_tabs') || '[]');
+  } catch (_) {}
+
   grid.innerHTML = servers.map((s, index) => {
     const protocol = s.protocol || 'vnc';
     const isFirst = index === 0;
@@ -214,6 +259,38 @@ function renderServers(servers) {
       ? `<div style="font-family: monospace; font-size: 0.75rem; color: #34d399; margin-top: 4px;">⚡ ${escapeHtml(s.initialCommand)}</div>`
       : '';
 
+    // 활성 세션 감지 (백엔드 세션 풀 또는 로컬 저장소 오픈 탭)
+    const serverBackendSessions = activeSessionsData.filter(sess => sess.serverId === s.id);
+    const hasLocalOpenTab = openTabs.some(t => t.serverId === s.id);
+    const hasActiveSession = serverBackendSessions.length > 0 || hasLocalOpenTab;
+    const sessionCount = Math.max(serverBackendSessions.length, hasLocalOpenTab ? 1 : 0);
+
+    const activeSessionBadge = hasActiveSession
+      ? `<span class="active-session-badge" title="백그라운드에서 유지 중인 활성 세션이 있습니다">⚡ 세션 유지 중${sessionCount > 1 ? ` (${sessionCount})` : ''}</span>`
+      : '';
+
+    // 접속 버튼 렌더링: 활성 세션이 있으면 "계속 (이어서 접속)" + "새로 접속"
+    const actionButtonsHtml = hasActiveSession ? `
+      <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+        <a href="/viewer.html?id=${s.id}" class="btn btn-continue btn-sm" title="기존 작업 화면으로 이어받아 접속합니다">
+          ▶️ 계속 (이어서 접속)
+        </a>
+        <a href="/viewer.html?id=${s.id}&forceNew=1" class="btn btn-secondary btn-sm" title="기존 세션을 유지한 채 새 세션 창을 엽니다">
+          ➕ 새로 접속
+        </a>
+      </div>
+    ` : `
+      <a href="/viewer.html?id=${s.id}" class="btn btn-primary btn-sm">
+        ${connectLabel}
+      </a>
+    `;
+
+    const terminateBtnHtml = hasActiveSession ? `
+      <button class="btn btn-outline-danger btn-sm" title="이 서버의 모든 백그라운드 세션 종료" onclick="terminateServerSessions('${s.id}')">
+        세션 종료
+      </button>
+    ` : '';
+
     return `
       <div class="server-card" id="card-${s.id}" draggable="true" data-id="${s.id}" data-index="${index}">
         <div>
@@ -221,6 +298,7 @@ function renderServers(servers) {
             <div class="card-title-row">
               <span class="protocol-badge ${protocol}">${protocol}</span>
               ${groupBadge}
+              ${activeSessionBadge}
               <h3 class="card-title">${escapeHtml(s.name)}</h3>
             </div>
             <div class="card-top-actions">
@@ -241,10 +319,9 @@ function renderServers(servers) {
           </div>
         </div>
         <div class="card-footer">
-          <a href="/viewer.html?id=${s.id}" class="btn btn-primary btn-sm">
-            ${connectLabel}
-          </a>
+          ${actionButtonsHtml}
           <div class="card-actions-right">
+            ${terminateBtnHtml}
             <button class="btn btn-secondary btn-sm" onclick="openEditServerModal('${s.id}')">
               수정
             </button>
@@ -259,6 +336,25 @@ function renderServers(servers) {
 
   setupDragAndDrop();
 }
+
+window.terminateServerSessions = async function(serverId) {
+  if (!confirm('이 서버에서 실행 중인 백그라운드 세션을 모두 종료하시겠습니까?')) return;
+  try {
+    const serverSessions = activeSessionsData.filter(sess => sess.serverId === serverId);
+    for (const sess of serverSessions) {
+      await fetch(`/api/sessions/${encodeURIComponent(sess.key)}`, { method: 'DELETE' }).catch(() => {});
+    }
+    try {
+      const openTabs = JSON.parse(localStorage.getItem('remotehub_open_tabs') || '[]');
+      const filtered = openTabs.filter(t => t.serverId !== serverId);
+      localStorage.setItem('remotehub_open_tabs', JSON.stringify(filtered));
+    } catch (_) {}
+
+    await loadServers();
+  } catch (err) {
+    alert('세션 종료 실패: ' + err.message);
+  }
+};
 
 // 드래그 앤 드롭 순서 변경 설정
 function setupDragAndDrop() {

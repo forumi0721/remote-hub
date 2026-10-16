@@ -1012,9 +1012,10 @@ async function initViewer() {
 
   await loadServers();
 
-  // URL 파라미터 체크 (?id=...)
+  // URL 파라미터 체크 (?id=..., ?forceNew=...)
   const urlParams = new URLSearchParams(window.location.search);
   const targetId = urlParams.get('id');
+  const forceNew = urlParams.get('forceNew') === '1' || urlParams.get('forceNew') === 'true';
 
   // 주소창에서 ?id=...를 정리하여 새로고침 시 기존 탭 목록이 지워지지 않도록 방지
   if (targetId) {
@@ -1047,16 +1048,18 @@ async function initViewer() {
   // 2. URL로 특정 서버 접속이 요청된 경우 활성화 또는 생성
   if (targetId) {
     let foundTabId = null;
-    for (const [tabId, session] of sessions.entries()) {
-      if (session.serverId === targetId) {
-        foundTabId = tabId;
-        break;
+    if (!forceNew) {
+      for (const [tabId, session] of sessions.entries()) {
+        if (session.serverId === targetId) {
+          foundTabId = tabId;
+          break;
+        }
       }
     }
     if (foundTabId) {
       activateTab(foundTabId);
     } else {
-      await createSessionTab(targetId, true);
+      await createSessionTab(targetId, true, null, forceNew);
     }
   } else if (restored) {
     if (savedActiveTabId && sessions.has(savedActiveTabId)) {
