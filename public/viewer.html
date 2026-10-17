@@ -77,8 +77,8 @@
             <button id="btn-font-dec" class="btn btn-secondary btn-xs" title="글꼴 작게 (Ctrl + -)">A-</button>
             <span id="font-size-display" class="font-size-display" title="현재 글꼴 크기">14px</span>
             <button id="btn-font-inc" class="btn btn-secondary btn-xs" title="글꼴 크게 (Ctrl + +)">A+</button>
-          </div>
           <button id="btn-cad" class="btn btn-secondary btn-sm" title="Ctrl+Alt+Del" style="display: none;">Ctrl+Alt+Del</button>
+          <button id="btn-clipboard" class="btn btn-secondary btn-sm" title="클립보드 관리 및 전송" style="display: none;">📋 클립보드</button>
           <button id="btn-scale" class="btn btn-secondary btn-sm" title="창 크기에 맞춤" style="display: none;">📐 창 맞춤: ON</button>
           <button id="btn-fullscreen" class="btn btn-secondary btn-sm" title="전체화면">⛶ 전체화면</button>
           <button id="btn-reconnect" class="btn btn-primary btn-sm" title="현재 세션 재연결">🔄 재연결</button>
@@ -137,6 +137,38 @@
       </form>
     </div>
   </div>
+
+  <!-- 클립보드 패널 모달 -->
+  <div id="modal-clipboard" class="modal-overlay">
+    <div class="modal-content" style="max-width: 520px;">
+      <div class="modal-header">
+        <h2>📋 원격 클립보드</h2>
+        <button type="button" class="btn-icon" id="btn-close-clipboard" style="font-size: 1.25rem;">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.75rem;">
+          원격지와 텍스트를 주고받을 수 있습니다. 뷰어 화면에서 <code>Ctrl+V</code>를 누르면 즉시 원격지로 붙여넣어지며, 아래에서 직접 텍스트를 입력하여 전송하거나 복사할 수도 있습니다.
+        </p>
+        <div class="form-group">
+          <textarea id="clipboard-textarea" rows="7" style="width: 100%; font-family: monospace; font-size: 0.85rem; padding: 0.75rem; border-radius: 6px; background: #0f172a; color: #f8fafc; border: 1px solid var(--border-color); resize: vertical; box-sizing: border-box;" placeholder="원격지로 전송할 텍스트를 입력하거나 붙여넣으세요..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content: space-between;">
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-copy-local">
+          📥 내 PC로 복사
+        </button>
+        <div style="display: flex; gap: 0.5rem;">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-clear">지우기</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-clipboard-send-remote">
+            📤 원격으로 보내기
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 클립보드 토스트 알림 -->
+  <div id="clipboard-toast" class="clipboard-toast"></div>
 
   <!-- 통합 멀티 탭 뷰어 스크립트 -->
   <script type="module" src="/js/viewer.js"></script>

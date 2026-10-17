@@ -47,6 +47,27 @@ const btnCancelPw = document.getElementById('btn-cancel-pw');
 
 let pendingPasswordTabId = null;
 
+// 클립보드 UI 엘리먼트
+const btnClipboard = document.getElementById('btn-clipboard');
+const modalClipboard = document.getElementById('modal-clipboard');
+const btnCloseClipboard = document.getElementById('btn-close-clipboard');
+const clipboardTextarea = document.getElementById('clipboard-textarea');
+const btnClipboardCopyLocal = document.getElementById('btn-clipboard-copy-local');
+const btnClipboardClear = document.getElementById('btn-clipboard-clear');
+const btnClipboardSendRemote = document.getElementById('btn-clipboard-send-remote');
+const clipboardToast = document.getElementById('clipboard-toast');
+let toastTimer = null;
+
+function showClipboardToast(message) {
+  if (!clipboardToast) return;
+  clipboardToast.textContent = message;
+  clipboardToast.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    clipboardToast.classList.remove('show');
+  }, 2500);
+}
+
 // 1. 사이드바 제어 (열기/닫기)
 function setSidebarOpen(open) {
   if (open) {
@@ -374,6 +395,7 @@ function updateToolbarForSession(session) {
     tabStatusEl.style.display = 'none';
     btnCad.style.display = 'none';
     btnScale.style.display = 'none';
+    if (btnClipboard) btnClipboard.style.display = 'none';
     if (sshFontControlsEl) sshFontControlsEl.style.display = 'none';
     return;
   }
@@ -385,6 +407,7 @@ function updateToolbarForSession(session) {
   if (session.engine === 'ssh') {
     btnCad.style.display = 'none';
     btnScale.style.display = 'none';
+    if (btnClipboard) btnClipboard.style.display = 'none';
     if (sshFontControlsEl) {
       sshFontControlsEl.style.display = 'inline-flex';
       updateFontSizeDisplay();
@@ -393,6 +416,7 @@ function updateToolbarForSession(session) {
     if (sshFontControlsEl) sshFontControlsEl.style.display = 'none';
     btnCad.style.display = 'inline-flex';
     btnScale.style.display = 'inline-flex';
+    if (btnClipboard) btnClipboard.style.display = 'inline-flex';
     btnScale.textContent = session.scaleEnabled ? '📐 창 맞춤: ON' : '📐 창 맞춤: OFF';
   }
 }
@@ -662,6 +686,20 @@ async function startVncSession(session) {
       openPasswordModal(session.tabId, '비밀번호 오류', '비밀번호가 올바르지 않습니다. 다시 입력해 주세요.');
     });
 
+    rfb.addEventListener('clipboard', (e) => {
+      const text = e.detail && e.detail.text;
+      if (text) {
+        session.lastClipboardText = text;
+        if (clipboardTextarea) {
+          clipboardTextarea.value = text;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(() => {});
+        }
+        showClipboardToast('📋 원격지 클립보드가 동기화되었습니다');
+      }
+    });
+
     session.instance = rfb;
 
   } catch (err) {
@@ -836,6 +874,111 @@ btnFullscreen.addEventListener('click', () => {
     });
   } else {
     document.exitFullscreen();
+  }
+});
+
+// 클립보드 모달 열기/닫기 및 액션
+function openClipboardModal() {
+  if (!modalClipboard) return;
+  const activeSession = getActiveSession();
+  if (activeSession && activeSession.lastClipboardText && clipboardTextarea && !clipboardTextarea.value) {
+    clipboardTextarea.value = activeSession.lastClipboardText;
+  }
+  // 브라우저 로컬 클립보드 자동 읽기 시도 (HTTPS 또는 지원되는 브라우저 권한일 경우)
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    navigator.clipboard.readText().then(text => {
+      if (text && clipboardTextarea && !clipboardTextarea.value) {
+        clipboardTextarea.value = text;
+      }
+    }).catch(() => {});
+  }
+  modalClipboard.classList.add('active');
+  if (clipboardTextarea) {
+    setTimeout(() => clipboardTextarea.focus(), 50);
+  }
+}
+
+function closeClipboardModal() {
+  if (modalClipboard) {
+    modalClipboard.classList.remove('active');
+  }
+}
+
+if (btnClipboard) {
+  btnClipboard.addEventListener('click', openClipboardModal);
+}
+if (btnCloseClipboard) {
+  btnCloseClipboard.addEventListener('click', closeClipboardModal);
+}
+if (btnClipboardClear) {
+  btnClipboardClear.addEventListener('click', () => {
+    if (clipboardTextarea) {
+      clipboardTextarea.value = '';
+      clipboardTextarea.focus();
+    }
+  });
+}
+if (btnClipboardCopyLocal) {
+  btnClipboardCopyLocal.addEventListener('click', () => {
+    if (!clipboardTextarea) return;
+    const text = clipboardTextarea.value;
+    if (!text) {
+      showClipboardToast('복사할 내용이 없습니다');
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        showClipboardToast('📥 내 PC 클립보드로 복사되었습니다');
+      }).catch(() => {
+        clipboardTextarea.select();
+        document.execCommand('copy');
+        showClipboardToast('📥 내 PC 클립보드로 복사되었습니다');
+      });
+    } else {
+      clipboardTextarea.select();
+      document.execCommand('copy');
+      showClipboardToast('📥 내 PC 클립보드로 복사되었습니다');
+    }
+  });
+}
+if (btnClipboardSendRemote) {
+  btnClipboardSendRemote.addEventListener('click', () => {
+    if (!clipboardTextarea) return;
+    const text = clipboardTextarea.value;
+    const activeSession = getActiveSession();
+    if (!activeSession) return;
+
+    if (activeSession.engine === 'vnc' && activeSession.instance) {
+      activeSession.instance.clipboardPasteFrom(text);
+      activeSession.lastClipboardText = text;
+      showClipboardToast(`📤 원격 클립보드로 전송되었습니다 (${text.length}자)`);
+      closeClipboardModal();
+    } else if (activeSession.engine === 'ssh' && activeSession.instance && activeSession.instance.ws) {
+      if (activeSession.instance.ws.readyState === WebSocket.OPEN) {
+        activeSession.instance.ws.send(text);
+        showClipboardToast(`📤 터미널로 텍스트가 전송되었습니다 (${text.length}자)`);
+        closeClipboardModal();
+      }
+    }
+  });
+}
+
+// 뷰어 화면에서 Ctrl+V 붙여넣기 시 원격지로 자동 전송
+window.addEventListener('paste', (e) => {
+  // 모달 입력창이나 textarea, 일반 input에서 붙여넣는 중이라면 가로채지 않음
+  if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+
+  const activeSession = getActiveSession();
+  if (activeSession && activeSession.engine === 'vnc' && activeSession.instance) {
+    const text = e.clipboardData ? e.clipboardData.getData('text') : '';
+    if (text) {
+      activeSession.instance.clipboardPasteFrom(text);
+      activeSession.lastClipboardText = text;
+      if (clipboardTextarea) {
+        clipboardTextarea.value = text;
+      }
+      showClipboardToast(`📋 클립보드가 원격지로 전송되었습니다 (${text.length}자)`);
+    }
   }
 });
 

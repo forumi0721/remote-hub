@@ -306,8 +306,8 @@ function renderServers(servers) {
                 <button type="button" class="btn-icon" title="위로 이동" onclick="moveServerOrder(${index}, -1)" ${isFirst ? 'disabled' : ''}>▲</button>
                 <button type="button" class="btn-icon" title="아래로 이동" onclick="moveServerOrder(${index}, 1)" ${isLast ? 'disabled' : ''}>▼</button>
               </div>
-              <span class="status-badge checking" id="badge-${s.id}">
-                <span class="dot">●</span> 확인 중
+              <span class="status-badge checking" id="badge-${s.id}" title="상태 확인 중...">
+                <span class="dot">●</span> ...
               </span>
             </div>
           </div>
@@ -449,14 +449,17 @@ async function checkServerPing(id) {
     const data = await res.json();
     if (data.online) {
       badge.className = 'status-badge online';
-      badge.innerHTML = `● 온라인 (${data.latency}ms)`;
+      badge.title = `온라인 (${data.latency}ms)`;
+      badge.innerHTML = `<span class="dot">●</span> ${data.latency}ms`;
     } else {
       badge.className = 'status-badge offline';
-      badge.innerHTML = `● 오프라인`;
+      badge.title = '오프라인 (연결 불가)';
+      badge.innerHTML = `<span class="dot">●</span> OFF`;
     }
   } catch (err) {
     badge.className = 'status-badge offline';
-    badge.innerHTML = `● 확인 불가`;
+    badge.title = '확인 불가';
+    badge.innerHTML = `<span class="dot">●</span> OFF`;
   }
 }
 
