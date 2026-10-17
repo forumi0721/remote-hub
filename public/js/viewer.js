@@ -54,7 +54,8 @@ const btnCloseClipboard = document.getElementById('btn-close-clipboard');
 const clipboardTextarea = document.getElementById('clipboard-textarea');
 const btnClipboardCopyLocal = document.getElementById('btn-clipboard-copy-local');
 const btnClipboardClear = document.getElementById('btn-clipboard-clear');
-const btnClipboardSendRemote = document.getElementById('btn-clipboard-send-remote');
+const btnClipboardCopyRemote = document.getElementById('btn-clipboard-copy-remote');
+const btnClipboardTypeRemote = document.getElementById('btn-clipboard-type-remote');
 const clipboardToast = document.getElementById('clipboard-toast');
 let toastTimer = null;
 
@@ -943,8 +944,102 @@ if (btnClipboardCopyLocal) {
     }
   });
 }
-if (btnClipboardSendRemote) {
-  btnClipboardSendRemote.addEventListener('click', () => {
+// VNC 화면으로 텍스트를 키보드 타이핑하듯 직접 전송 (QEMU 가상머신, 클립보드 데몬 없는 X11 환경 완벽 지원)
+async function sendKeystrokesToVnc(rfb, text) {
+  if (!rfb || typeof rfb.sendKey !== 'function') return;
+
+  const shiftSymbols = {
+    '~': { code: 'Backquote', sym: 0x7e },
+    '!': { code: 'Digit1', sym: 0x21 },
+    '@': { code: 'Digit2', sym: 0x40 },
+    '#': { code: 'Digit3', sym: 0x23 },
+    '$': { code: 'Digit4', sym: 0x24 },
+    '%': { code: 'Digit5', sym: 0x25 },
+    '^': { code: 'Digit6', sym: 0x5e },
+    '&': { code: 'Digit7', sym: 0x26 },
+    '*': { code: 'Digit8', sym: 0x2a },
+    '(': { code: 'Digit9', sym: 0x28 },
+    ')': { code: 'Digit0', sym: 0x29 },
+    '_': { code: 'Minus', sym: 0x5f },
+    '+': { code: 'Equal', sym: 0x2b },
+    '{': { code: 'BracketLeft', sym: 0x7b },
+    '}': { code: 'BracketRight', sym: 0x7d },
+    '|': { code: 'Backslash', sym: 0x7c },
+    ':': { code: 'Semicolon', sym: 0x3a },
+    '"': { code: 'Quote', sym: 0x22 },
+    '<': { code: 'Comma', sym: 0x3c },
+    '>': { code: 'Period', sym: 0x3e },
+    '?': { code: 'Slash', sym: 0x3f }
+  };
+
+  const normalSymbols = {
+    '`': { code: 'Backquote', sym: 0x60 },
+    '-': { code: 'Minus', sym: 0x2d },
+    '=': { code: 'Equal', sym: 0x3d },
+    '[': { code: 'BracketLeft', sym: 0x5b },
+    ']': { code: 'BracketRight', sym: 0x5d },
+    '\\': { code: 'Backslash', sym: 0x5c },
+    ';': { code: 'Semicolon', sym: 0x3b },
+    "'": { code: 'Quote', sym: 0x27 },
+    ',': { code: 'Comma', sym: 0x2c },
+    '.': { code: 'Period', sym: 0x2e },
+    '/': { code: 'Slash', sym: 0x2f }
+  };
+
+  for (const char of text) {
+    if (char === '\r') continue;
+
+    if (char === '\n') {
+      rfb.sendKey(0xff0d, 'Enter', true);
+      rfb.sendKey(0xff0d, 'Enter', false);
+    } else if (char === '\t') {
+      rfb.sendKey(0xff09, 'Tab', true);
+      rfb.sendKey(0xff09, 'Tab', false);
+    } else if (char === ' ') {
+      rfb.sendKey(0x20, 'Space', true);
+      rfb.sendKey(0x20, 'Space', false);
+    } else if (char >= 'a' && char <= 'z') {
+      const code = 'Key' + char.toUpperCase();
+      const sym = char.charCodeAt(0);
+      rfb.sendKey(sym, code, true);
+      rfb.sendKey(sym, code, false);
+    } else if (char >= 'A' && char <= 'Z') {
+      const code = 'Key' + char;
+      const sym = char.charCodeAt(0);
+      rfb.sendKey(0xffe1, 'ShiftLeft', true);
+      rfb.sendKey(sym, code, true);
+      rfb.sendKey(sym, code, false);
+      rfb.sendKey(0xffe1, 'ShiftLeft', false);
+    } else if (char >= '0' && char <= '9') {
+      const code = 'Digit' + char;
+      const sym = char.charCodeAt(0);
+      rfb.sendKey(sym, code, true);
+      rfb.sendKey(sym, code, false);
+    } else if (shiftSymbols[char]) {
+      const { code, sym } = shiftSymbols[char];
+      rfb.sendKey(0xffe1, 'ShiftLeft', true);
+      rfb.sendKey(sym, code, true);
+      rfb.sendKey(sym, code, false);
+      rfb.sendKey(0xffe1, 'ShiftLeft', false);
+    } else if (normalSymbols[char]) {
+      const { code, sym } = normalSymbols[char];
+      rfb.sendKey(sym, code, true);
+      rfb.sendKey(sym, code, false);
+    } else {
+      const codePoint = char.codePointAt(0);
+      const sym = 0x01000000 | codePoint;
+      rfb.sendKey(sym, undefined, true);
+      rfb.sendKey(sym, undefined, false);
+    }
+
+    // 약간의 딜레이로 원격 가상 키보드 버퍼 수신 보장
+    await new Promise(r => setTimeout(r, 10));
+  }
+}
+
+// 1) 원격 OS 클립보드로 전송 (원격지에서 Ctrl+V 또는 우클릭 붙여넣기 사용)
+if (btnClipboardCopyRemote) {
+  btnClipboardCopyRemote.addEventListener('click', () => {
     if (!clipboardTextarea) return;
     const text = clipboardTextarea.value;
     const activeSession = getActiveSession();
@@ -953,13 +1048,45 @@ if (btnClipboardSendRemote) {
     if (activeSession.engine === 'vnc' && activeSession.instance) {
       activeSession.instance.clipboardPasteFrom(text);
       activeSession.lastClipboardText = text;
-      showClipboardToast(`📤 원격 클립보드로 전송되었습니다 (${text.length}자)`);
+      showClipboardToast(`📋 원격 클립보드로 복사되었습니다. 원격지에서 Ctrl+V로 붙여넣으세요 (${text.length}자)`);
       closeClipboardModal();
     } else if (activeSession.engine === 'ssh' && activeSession.instance && activeSession.instance.ws) {
       if (activeSession.instance.ws.readyState === WebSocket.OPEN) {
         activeSession.instance.ws.send(text);
         showClipboardToast(`📤 터미널로 텍스트가 전송되었습니다 (${text.length}자)`);
         closeClipboardModal();
+      }
+    }
+  });
+}
+
+// 2) 원격 화면에 직접 타이핑 입력 (QEMU 가상머신, 클립보드 데몬 없는 환경 커서 위치 즉시 입력)
+if (btnClipboardTypeRemote) {
+  btnClipboardTypeRemote.addEventListener('click', async () => {
+    if (!clipboardTextarea) return;
+    const text = clipboardTextarea.value;
+    const activeSession = getActiveSession();
+    if (!activeSession) return;
+
+    closeClipboardModal();
+
+    if (activeSession.engine === 'vnc' && activeSession.instance) {
+      showClipboardToast(`⌨️ 원격 화면으로 타이핑 입력 중... (${text.length}자)`);
+      const canvas = activeSession.viewEl.querySelector('canvas');
+      if (canvas) canvas.focus();
+
+      // 클립보드 버퍼에도 복사해 두고
+      try { activeSession.instance.clipboardPasteFrom(text); } catch (_) {}
+      activeSession.lastClipboardText = text;
+
+      // 화면에 직접 키스트로크 타이핑 전송!
+      await sendKeystrokesToVnc(activeSession.instance, text);
+      showClipboardToast(`⌨️ 화면 타이핑 입력 완료 (${text.length}자)`);
+    } else if (activeSession.engine === 'ssh' && activeSession.instance && activeSession.instance.ws) {
+      if (activeSession.instance.ws.readyState === WebSocket.OPEN) {
+        activeSession.instance.ws.send(text);
+        if (activeSession.instance.term) activeSession.instance.term.focus();
+        showClipboardToast(`⌨️ 터미널로 텍스트 입력 완료 (${text.length}자)`);
       }
     }
   });

@@ -148,20 +148,23 @@
       </div>
       <div class="modal-body">
         <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.75rem;">
-          원격지와 텍스트를 주고받을 수 있습니다. 뷰어 화면에서 <code>Ctrl+V</code>를 누르면 즉시 원격지로 붙여넣어지며, 아래에서 직접 텍스트를 입력하여 전송하거나 복사할 수도 있습니다.
+          원격지와 텍스트를 주고받을 수 있습니다. QEMU 가상머신이나 터미널 환경에서는 <strong>[⌨️ 화면에 직접 타이핑 입력]</strong>을 누르면 현재 활성화된 창/커서 위치에 즉시 타이핑됩니다.
         </p>
         <div class="form-group">
           <textarea id="clipboard-textarea" rows="7" style="width: 100%; font-family: monospace; font-size: 0.85rem; padding: 0.75rem; border-radius: 6px; background: #0f172a; color: #f8fafc; border: 1px solid var(--border-color); resize: vertical; box-sizing: border-box;" placeholder="원격지로 전송할 텍스트를 입력하거나 붙여넣으세요..."></textarea>
         </div>
       </div>
-      <div class="modal-footer" style="justify-content: space-between;">
+      <div class="modal-footer" style="justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
         <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-copy-local">
           📥 내 PC로 복사
         </button>
-        <div style="display: flex; gap: 0.5rem;">
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
           <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-clear">지우기</button>
-          <button type="button" class="btn btn-primary btn-sm" id="btn-clipboard-send-remote">
-            📤 원격으로 보내기
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-copy-remote" title="원격 OS 클립보드로 전송 (원격지에서 Ctrl+V 붙여넣기 필요)">
+            📋 클립보드로 복사
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-clipboard-type-remote" title="현재 원격 화면의 커서 위치에 글자를 직접 타이핑하여 입력합니다 (가상머신/터미널 추천)">
+            ⌨️ 화면에 직접 타이핑 입력
           </button>
         </div>
       </div>
