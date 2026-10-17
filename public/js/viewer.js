@@ -404,10 +404,13 @@ function updateToolbarForSession(session) {
   tabStatusEl.className = `status-indicator ${session.status}`;
   tabStatusEl.textContent = `● ${getStatusMessage(session.status)}`;
 
+  if (btnClipboard) {
+    btnClipboard.style.display = 'inline-flex';
+  }
+
   if (session.engine === 'ssh') {
     btnCad.style.display = 'none';
     btnScale.style.display = 'none';
-    if (btnClipboard) btnClipboard.style.display = 'none';
     if (sshFontControlsEl) {
       sshFontControlsEl.style.display = 'inline-flex';
       updateFontSizeDisplay();
@@ -416,7 +419,6 @@ function updateToolbarForSession(session) {
     if (sshFontControlsEl) sshFontControlsEl.style.display = 'none';
     btnCad.style.display = 'inline-flex';
     btnScale.style.display = 'inline-flex';
-    if (btnClipboard) btnClipboard.style.display = 'inline-flex';
     btnScale.textContent = session.scaleEnabled ? '📐 창 맞춤: ON' : '📐 창 맞춤: OFF';
   }
 }
