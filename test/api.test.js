@@ -15,6 +15,7 @@ const session = require('express-session');
 const cookieParser = require('cookie-parser');
 
 function setupTestApp() {
+  if (!fs.existsSync(TEST_CONFIG_PATH)) configManager.writeConfig({ auth: { enabled: false, passwordHash: '' }, servers: [] });
   const app = express();
   app.use(express.json());
   app.use(cookieParser());
@@ -71,9 +72,7 @@ function makeRequest(server, options, body = null, cookies = '') {
 }
 
 test('1. Config Manager: 단위 테스트', async (t) => {
-  if (fs.existsSync(TEST_CONFIG_PATH)) {
-    fs.unlinkSync(TEST_CONFIG_PATH);
-  }
+  configManager.writeConfig({ auth: { enabled: false, passwordHash: '' }, servers: [] });
 
   // 초기화 및 기본값 확인
   const cfg = configManager.readConfig();
@@ -113,9 +112,7 @@ test('1. Config Manager: 단위 테스트', async (t) => {
 });
 
 test('2. REST API & 인증 플로우: 통합 테스트', async (t) => {
-  if (fs.existsSync(TEST_CONFIG_PATH)) {
-    fs.unlinkSync(TEST_CONFIG_PATH);
-  }
+  configManager.writeConfig({ auth: { enabled: false, passwordHash: '' }, servers: [] });
 
   const app = setupTestApp();
   const server = http.createServer(app);
@@ -200,9 +197,7 @@ test('2. REST API & 인증 플로우: 통합 테스트', async (t) => {
 
 test('3. WebSocket 프록시 & 인증 차단: 통합 테스트', async (t) => {
   const WebSocket = require('ws');
-  if (fs.existsSync(TEST_CONFIG_PATH)) {
-    fs.unlinkSync(TEST_CONFIG_PATH);
-  }
+  configManager.writeConfig({ auth: { enabled: false, passwordHash: '' }, servers: [] });
 
   // 기본 서버 1개 추가
   configManager.addServer({
@@ -293,9 +288,7 @@ test('3. WebSocket 프록시 & 인증 차단: 통합 테스트', async (t) => {
 });
 
 test('4. VNC/RDP 프로토콜 기본값 호환성 및 서버 순서 변경(Reorder) 테스트', async (t) => {
-  if (fs.existsSync(TEST_CONFIG_PATH)) {
-    fs.unlinkSync(TEST_CONFIG_PATH);
-  }
+  configManager.writeConfig({ auth: { enabled: false, passwordHash: '' }, servers: [] });
 
   const app = setupTestApp();
   const server = http.createServer(app);
@@ -376,9 +369,7 @@ test('4. VNC/RDP 프로토콜 기본값 호환성 및 서버 순서 변경(Reord
 });
 
 test('5. SSH 터미널 서버 등록, Key 인증, 시작 명령(initialCommand) 검증 테스트', async (t) => {
-  if (fs.existsSync(TEST_CONFIG_PATH)) {
-    fs.unlinkSync(TEST_CONFIG_PATH);
-  }
+  configManager.writeConfig({ auth: { enabled: false, passwordHash: '' }, servers: [] });
 
   const app = setupTestApp();
   const server = http.createServer(app);
@@ -426,15 +417,17 @@ test('5. SSH 터미널 서버 등록, Key 인증, 시작 명령(initialCommand) 
   const connRes = await makeRequest(server, { path: `/api/servers/${sshServer.body.id}/connection` });
   assert.equal(connRes.status, 200);
   assert.equal(connRes.body.authType, 'key');
-  assert.ok(connRes.body.privateKey.includes('BEGIN OPENSSH PRIVATE KEY'));
-  assert.equal(connRes.body.passphrase, 'key_passphrase_xyz');
+  assert.equal(connRes.body.privateKey, undefined);
+  assert.equal(connRes.body.passphrase, undefined);
+  assert.equal(connRes.body.password, undefined);
+  assert.equal(sshServer.body.privateKey, undefined);
+  assert.equal(sshServer.body.passphrase, undefined);
+  assert.equal(connRes.body.hasPrivateKey, true);
   assert.equal(connRes.body.initialCommand, 'tmux new -A -s remotehub');
 });
 
 test('6. 서버 그룹(Group) 및 태그(Tags) 등록, 수정, 목록 조회 테스트', async (t) => {
-  if (fs.existsSync(TEST_CONFIG_PATH)) {
-    fs.unlinkSync(TEST_CONFIG_PATH);
-  }
+  configManager.writeConfig({ auth: { enabled: false, passwordHash: '' }, servers: [] });
 
   const app = setupTestApp();
   const server = http.createServer(app);

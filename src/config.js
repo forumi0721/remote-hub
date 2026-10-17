@@ -31,7 +31,7 @@ function ensureConfigExists() {
       fs.mkdirSync(dirPath, { recursive: true });
     }
     if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf8');
+      fs.writeFileSync(filePath, JSON.stringify(DEFAULT_CONFIG, null, 2), { encoding: 'utf8', mode: 0o600 });
       console.log(`[Config] Created default config at: ${filePath}`);
     }
   } catch (err) {
@@ -42,18 +42,26 @@ function ensureConfigExists() {
 
 // 설정 읽기
 function readConfig() {
-  ensureConfigExists();
   const filePath = getConfigPath();
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+        !parsed.auth || typeof parsed.auth.enabled !== 'boolean' ||
+        typeof parsed.auth.passwordHash !== 'string' || !Array.isArray(parsed.servers)) {
+      throw new Error('Invalid configuration schema');
+    }
+    parsed.servers.forEach(server => validateServerData(server, true));
+    if (parsed.auth.enabled && !parsed.auth.passwordHash) throw new Error('Missing authentication hash');
     return {
       auth: { ...DEFAULT_CONFIG.auth, ...(parsed.auth || {}) },
       servers: Array.isArray(parsed.servers) ? parsed.servers : []
     };
   } catch (err) {
     console.error(`[Config] Failed to read config from ${filePath}:`, err.message);
-    return DEFAULT_CONFIG;
+    const error = new Error('설정 파일을 읽을 수 없습니다. 파일을 복구해 주세요.');
+    error.status = 503;
+    throw error;
   }
 }
 
@@ -67,7 +75,7 @@ function writeConfig(config) {
     if (!fs.existsSync(dirPath)) {
       fs.mkdirSync(dirPath, { recursive: true });
     }
-    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), 'utf8');
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     if (fs.existsSync(tmpPath)) {
@@ -76,6 +84,32 @@ function writeConfig(config) {
     console.error(`[Config] Failed to save config to ${filePath}:`, err.message);
     throw err;
   }
+}
+
+function validateServerData(data, creating = false) {
+  const fail = message => { const error = new Error(message); error.status = 400; throw error; };
+  if (!data || typeof data !== 'object' || Array.isArray(data)) fail('서버 정보는 객체여야 합니다.');
+  for (const key of ['name', 'host', 'group', 'username', 'domain', 'password', 'privateKey', 'passphrase', 'initialCommand', 'description']) {
+    if (data[key] !== undefined && typeof data[key] !== 'string') fail(`${key}는 문자열이어야 합니다.`);
+  }
+  for (const key of ['name', 'host']) {
+    if ((creating || data[key] !== undefined) && (typeof data[key] !== 'string' || !data[key].trim())) fail(`${key}는 필수입니다.`);
+  }
+  if (data.host !== undefined && /[\s/\\\x00-\x1f]/.test(data.host.trim())) fail('유효한 호스트가 필요합니다.');
+  if (data.port !== undefined && !((typeof data.port === 'number' || (typeof data.port === 'string' && /^\d+$/.test(data.port))) && Number.isInteger(Number(data.port)) && Number(data.port) >= 1 && Number(data.port) <= 65535)) fail('포트는 1~65535 정수여야 합니다.');
+  if (data.protocol !== undefined && !['vnc', 'rdp', 'ssh'].includes(data.protocol)) fail('지원하지 않는 프로토콜입니다.');
+  if (data.authType !== undefined && !['password', 'key'].includes(data.authType)) fail('지원하지 않는 인증 방식입니다.');
+  if (data.tags !== undefined && typeof data.tags !== 'string' && !(Array.isArray(data.tags) && data.tags.every(t => typeof t === 'string'))) fail('태그는 문자열 또는 문자열 배열이어야 합니다.');
+}
+
+function trustRemoteIdentity(id, field, fingerprint) {
+  if (!['sshHostKeyFingerprint', 'rdpCertificateFingerprint'].includes(field) || !fingerprint) throw new Error('Invalid remote identity');
+  const config = readConfig();
+  const server = config.servers.find(s => s.id === id);
+  if (!server) throw new Error('Server configuration not found');
+  if (server[field] && server[field] !== fingerprint) throw new Error('Remote identity changed; verify the server fingerprint before reconnecting');
+  if (!server[field]) { server[field] = fingerprint; writeConfig(config); }
+  return true;
 }
 
 function parseTags(input) {
@@ -135,6 +169,7 @@ function getDefaultPort(protocol) {
 
 // 서버 추가
 function addServer(serverData) {
+  validateServerData(serverData, true);
   const config = readConfig();
   const protocol = ['rdp', 'ssh'].includes(serverData.protocol) ? serverData.protocol : 'vnc';
   const defaultPort = getDefaultPort(protocol);
@@ -165,6 +200,7 @@ function addServer(serverData) {
 
 // 서버 수정
 function updateServer(id, serverData) {
+  validateServerData(serverData);
   const config = readConfig();
   const index = config.servers.findIndex(s => s.id === id);
   if (index === -1) {
@@ -203,6 +239,10 @@ function updateServer(id, serverData) {
     updated.passphrase = serverData.passphrase;
   }
 
+  if (updated.host !== existing.host || updated.port !== existing.port || updated.protocol !== (existing.protocol || 'vnc')) {
+    delete updated.sshHostKeyFingerprint;
+    delete updated.rdpCertificateFingerprint;
+  }
   config.servers[index] = updated;
   writeConfig(config);
   return updated;
@@ -247,7 +287,12 @@ function deleteServer(id) {
   return false;
 }
 
+// Bootstrap only once. A missing configuration during runtime must fail closed.
+ensureConfigExists();
+
 module.exports = {
+  validateServerData,
+  trustRemoteIdentity,
   getConfigPath,
   readConfig,
   writeConfig,

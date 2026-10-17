@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>RemoteHub Console - 올인원 원격 접속</title>
   <link rel="stylesheet" href="/css/style.css">
   <link rel="stylesheet" href="/xterm/css/xterm.css">
@@ -35,6 +35,7 @@
   </style>
 </head>
 <body class="viewer-page">
+  <button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="서버 목록 닫기" tabindex="-1" hidden></button>
   <div class="viewer-layout">
     <!-- 1. 좌측 열고 닫는 서버 목록 패널 (사이드바) -->
     <aside id="viewer-sidebar" class="viewer-sidebar">
@@ -46,7 +47,7 @@
         <button id="btn-toggle-sidebar" class="btn-icon" title="패널 닫기">◀</button>
       </div>
       <div class="sidebar-search">
-        <input type="text" id="sidebar-search-input" placeholder="서버 검색...">
+        <input type="search" aria-label="사이드바 서버 검색" id="sidebar-search-input" placeholder="서버 검색...">
       </div>
       <div class="sidebar-servers-list" id="sidebar-servers-list">
         <!-- 서버 목록 동적 주입 -->
@@ -66,12 +67,18 @@
             ☰ 서버 목록
           </button>
           <!-- 멀티 탭 컨테이너 -->
-          <div id="tabs-container" class="tabs-container"></div>
+          <div id="tabs-container" class="tabs-container" role="tablist" aria-label="원격 세션"></div>
         </div>
 
         <!-- 우측 컨트롤러 (활성 탭 기준 조작) -->
         <div class="topbar-right">
           <span id="tab-status" class="status-indicator connecting" style="display: none;">● 준비 중</span>
+          <button id="btn-reconnect" class="btn btn-primary btn-sm" title="현재 세션 재연결">🔄 재연결</button>
+          <details id="viewer-tools" class="viewer-tools"><summary class="btn btn-secondary btn-sm">더보기</summary><div class="viewer-tools-panel">
+          <button id="btn-session-menu" class="btn btn-secondary btn-sm" type="button" aria-haspopup="menu" aria-controls="tab-context-menu">세션 관리</button>
+          <label id="rdp-resolution-control" class="rdp-resolution-control" hidden>RDP 해상도<select id="rdp-resolution" aria-label="RDP 해상도"><option value="1280x720">1280 × 720</option><option value="1024x768">1024 × 768</option><option value="1920x1080">1920 × 1080</option></select></label>
+          <button id="btn-rdp-pan" class="btn btn-secondary btn-sm" type="button" aria-pressed="false" hidden>화면 이동 모드</button>
+          <p id="rdp-touch-hint" class="control-hint" hidden>탭: 클릭 · 손가락 이동: 드래그 · 길게 누르기: 우클릭 · 두 손가락 이동: 스크롤</p>
           <!-- SSH 터미널 폰트 크기 조절 컨트롤 -->
           <div id="ssh-font-controls" class="ssh-font-controls" style="display: none;">
             <button id="btn-font-dec" class="btn btn-secondary btn-xs" title="글꼴 작게 (Ctrl + -)">A-</button>
@@ -82,7 +89,8 @@
           <button id="btn-clipboard" class="btn btn-secondary btn-sm" title="클립보드 관리 및 전송" style="display: none;">📋 클립보드</button>
           <button id="btn-scale" class="btn btn-secondary btn-sm" title="창 크기에 맞춤" style="display: none;">📐 창 맞춤: ON</button>
           <button id="btn-fullscreen" class="btn btn-secondary btn-sm" title="전체화면">⛶ 전체화면</button>
-          <button id="btn-reconnect" class="btn btn-primary btn-sm" title="현재 세션 재연결">🔄 재연결</button>
+
+          </div></details>
         </div>
       </header>
 
@@ -93,27 +101,36 @@
           <p>좌측 서버 목록 패널에서 접속할 서버를 클릭하여 새 탭을 열어보세요.</p>
         </div>
       </div>
+      <div id="mobile-input-bar" class="mobile-input-bar" role="toolbar" aria-label="원격 입력 보조 키" hidden>
+        <button id="btn-mobile-keyboard" type="button">키보드</button>
+        <div id="terminal-keys" class="terminal-keys">
+          <button type="button" data-terminal-key="Escape">Esc</button><button type="button" data-terminal-key="Tab">Tab</button>
+          <button id="btn-terminal-ctrl" type="button" aria-pressed="false" title="다음 입력에 Ctrl 적용">Ctrl</button>
+          <button type="button" data-terminal-key="Interrupt" aria-label="Ctrl+C 중단">Ctrl+C</button>
+          <button type="button" data-terminal-key="ArrowLeft" aria-label="왼쪽 방향키">←</button><button type="button" data-terminal-key="ArrowUp" aria-label="위쪽 방향키">↑</button><button type="button" data-terminal-key="ArrowDown" aria-label="아래쪽 방향키">↓</button><button type="button" data-terminal-key="ArrowRight" aria-label="오른쪽 방향키">→</button>
+        </div>
+      </div>
     </main>
   </div>
 
   <!-- 탭 우클릭 컨텍스트 메뉴 -->
-  <div id="tab-context-menu" class="tab-context-menu" style="display: none;">
-    <div class="context-menu-item" id="ctx-duplicate">
+  <div id="tab-context-menu" role="menu" aria-label="현재 세션 관리" class="tab-context-menu" style="display: none;">
+    <button type="button" role="menuitem" class="context-menu-item" id="ctx-duplicate">
       <span>📋</span> 세션 복제 (새 탭으로 열기)
-    </div>
-    <div class="context-menu-item" id="ctx-reconnect">
+    </button>
+    <button type="button" role="menuitem" class="context-menu-item" id="ctx-reconnect">
       <span>🔄</span> 세션 재연결 (이어받기)
-    </div>
-    <div class="context-menu-item" id="ctx-fresh">
+    </button>
+    <button type="button" role="menuitem" class="context-menu-item" id="ctx-fresh">
       <span>🆕</span> 세션 새로 시작 (신규 접속)
-    </div>
+    </button>
     <div class="context-menu-divider"></div>
-    <div class="context-menu-item" id="ctx-close">
+    <button type="button" role="menuitem" class="context-menu-item" id="ctx-close">
       <span>✕</span> 탭 닫기 (세션 종료)
-    </div>
-    <div class="context-menu-item" id="ctx-close-others">
+    </button>
+    <button type="button" role="menuitem" class="context-menu-item" id="ctx-close-others">
       <span>🧹</span> 다른 탭 모두 닫기
-    </div>
+    </button>
   </div>
 
   <!-- 비밀번호 입력 모달 (비밀번호 미설정/불일치 시 표시) -->
@@ -121,6 +138,7 @@
     <div class="modal-content" style="max-width: 380px;">
       <div class="modal-header">
         <h2 id="modal-password-title">비밀번호 입력 필요</h2>
+        <button type="button" class="close-btn" id="btn-cancel-password" data-dialog-close aria-label="비밀번호 입력 취소">×</button>
       </div>
       <form id="form-password">
         <div class="modal-body">
@@ -128,7 +146,7 @@
             이 원격 서버에 접속하려면 비밀번호가 필요합니다.
           </p>
           <div class="form-group">
-            <input type="password" id="input-vnc-pw" required placeholder="비밀번호" autofocus>
+            <input type="password" id="input-vnc-pw" required aria-label="원격 서버 비밀번호" autocomplete="current-password" placeholder="비밀번호">
           </div>
         </div>
         <div class="modal-footer">
@@ -144,29 +162,23 @@
     <div class="modal-content" style="max-width: 520px;">
       <div class="modal-header">
         <h2>📋 원격 클립보드</h2>
-        <button type="button" class="btn-icon" id="btn-close-clipboard" style="font-size: 1.25rem;">&times;</button>
+        <button type="button" class="btn-icon" id="btn-close-clipboard" data-dialog-close aria-label="클립보드 닫기" style="font-size: 1.25rem;">&times;</button>
       </div>
       <div class="modal-body">
         <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.75rem;">
-          원격지와 텍스트를 주고받을 수 있습니다. QEMU 가상머신이나 터미널 환경에서는 <strong>[⌨️ 화면에 직접 타이핑 입력]</strong>을 누르면 현재 활성화된 창/커서 위치에 즉시 타이핑됩니다.
+          텍스트를 입력하거나 붙여넣은 뒤 <strong>원격에 입력</strong>을 누르세요. SSH에서는 줄바꿈이 포함되면 명령이 실행될 수 있습니다.
         </p>
         <div class="form-group">
-          <textarea id="clipboard-textarea" rows="7" style="width: 100%; font-family: monospace; font-size: 0.85rem; padding: 0.75rem; border-radius: 6px; background: #0f172a; color: #f8fafc; border: 1px solid var(--border-color); resize: vertical; box-sizing: border-box;" placeholder="원격지로 전송할 텍스트를 입력하거나 붙여넣으세요..."></textarea>
+          <textarea id="clipboard-textarea" aria-label="원격에 입력할 텍스트" autocapitalize="off" autocomplete="off" spellcheck="false" rows="4" style="width: 100%; font-family: monospace; font-size: 1rem; padding: 0.75rem; border-radius: 6px; background: #0f172a; color: #f8fafc; border: 1px solid var(--border-color); resize: vertical; box-sizing: border-box;" placeholder="원격지로 전송할 텍스트를 입력하거나 붙여넣으세요..."></textarea>
         </div>
       </div>
-      <div class="modal-footer" style="justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
-        <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-copy-local">
-          📥 내 PC로 복사
-        </button>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-clear">지우기</button>
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-clipboard-copy-remote" title="원격 OS 클립보드로 전송 (원격지에서 Ctrl+V 붙여넣기 필요)">
-            📋 클립보드로 복사
-          </button>
-          <button type="button" class="btn btn-primary btn-sm" id="btn-clipboard-type-remote" title="현재 원격 화면의 커서 위치에 글자를 직접 타이핑하여 입력합니다 (가상머신/터미널 추천)">
-            ⌨️ 화면에 직접 타이핑 입력
-          </button>
-        </div>
+      <div class="modal-footer clipboard-footer">
+        <button type="button" class="btn btn-primary" id="btn-clipboard-type-remote" title="현재 원격 커서 위치에 텍스트 입력">원격에 입력</button>
+        <details class="clipboard-secondary"><summary class="btn btn-secondary">기타 동작</summary><div class="clipboard-secondary-panel">
+          <button type="button" class="btn btn-secondary" id="btn-clipboard-copy-local">기기로 복사</button>
+          <button type="button" class="btn btn-secondary" id="btn-clipboard-copy-remote">원격 클립보드로 복사</button>
+          <button type="button" class="btn btn-secondary" id="btn-clipboard-clear">지우기</button>
+        </div></details>
       </div>
     </div>
   </div>
@@ -175,6 +187,7 @@
   <div id="clipboard-toast" class="clipboard-toast"></div>
 
   <!-- 통합 멀티 탭 뷰어 스크립트 -->
+  <script src="/js/ui.js"></script>
   <script type="module" src="/js/viewer.js"></script>
 </body>
 </html>

@@ -86,8 +86,8 @@ export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTr
       const rect = canvas.getBoundingClientRect();
       const scaleX = canvas.width / rect.width;
       const scaleY = canvas.height / rect.height;
-      const x = Math.round((e.clientX - rect.left) * scaleX);
-      const y = Math.round((e.clientY - rect.top) * scaleY);
+      const x = Math.max(0, Math.min(canvas.width - 1, Math.round((e.clientX - rect.left) * scaleX)));
+      const y = Math.max(0, Math.min(canvas.height - 1, Math.round((e.clientY - rect.top) * scaleY)));
 
       const event = DeviceEvent.mouseMove(x, y);
       const tx = new InputTransaction();
@@ -152,25 +152,97 @@ export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTr
     }
   };
 
-  const onContextMenu = (e) => e.preventDefault();
-
-  canvas.addEventListener('keydown', onKeyDown);
-  canvas.addEventListener('keyup', onKeyUp);
-  canvas.addEventListener('mousemove', onMouseMove);
-  canvas.addEventListener('mousedown', onMouseDown);
-  canvas.addEventListener('mouseup', onMouseUp);
+  const pointers = new Map();
+  const mouseButtons = new Set();
+  let scrolling = false;
+  let scrollRemainder = 0;
+  function buttonEvent(button, down) {
+    const session = getSession();
+    if (!session) return;
+    const transaction = new InputTransaction();
+    transaction.addEvent(down ? DeviceEvent.mouseButtonPressed(button) : DeviceEvent.mouseButtonReleased(button));
+    session.applyInputs(transaction);
+  }
+  const onPointerDown = event => {
+    if (!getSession() || (event.pointerType === 'touch' && canvas.dataset.touchMode === 'pan')) return;
+    event.preventDefault();
+    canvas.focus({ preventScroll: true });
+    try { canvas.setPointerCapture?.(event.pointerId); } catch (_) {}
+    if (event.pointerType !== 'touch') {
+      onMouseMove(event); onMouseDown(event); mouseButtons.add(event.button); return;
+    }
+    const point = { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false, pressed: false, longPressed: false, timer: null };
+    pointers.set(event.pointerId, point);
+    if (pointers.size > 1) {
+      scrolling = true;
+      for (const pointer of pointers.values()) {
+        clearTimeout(pointer.timer);
+        if (pointer.pressed) { buttonEvent(0, false); pointer.pressed = false; }
+      }
+      return;
+    }
+    onMouseMove(event);
+    point.timer = setTimeout(() => {
+      if (point.moved || scrolling || !pointers.has(event.pointerId)) return;
+      point.longPressed = true;
+      buttonEvent(2, true); buttonEvent(2, false);
+    }, 500);
+  };
+  const onPointerMove = event => {
+    if (event.pointerType !== 'touch') { onMouseMove(event); return; }
+    const point = pointers.get(event.pointerId);
+    if (!point) return;
+    event.preventDefault();
+    const deltaY = event.clientY - point.y;
+    point.x = event.clientX; point.y = event.clientY;
+    if (scrolling) {
+      scrollRemainder += deltaY;
+      if (Math.abs(scrollRemainder) >= 16) {
+        onWheel({ deltaY: -scrollRemainder, deltaX: 0, preventDefault() {} });
+        scrollRemainder = 0;
+      }
+      return;
+    }
+    if (point.longPressed) return;
+    if (Math.hypot(point.x - point.startX, point.y - point.startY) > 8) {
+      clearTimeout(point.timer);
+      if (!point.pressed) { buttonEvent(0, true); point.pressed = true; }
+      point.moved = true;
+      onMouseMove(event);
+    }
+  };
+  const finishPointer = (event, canceled = false) => {
+    if (event.pointerType !== 'touch') {
+      if (canceled) { for (const button of mouseButtons) buttonEvent(button, false); mouseButtons.clear(); return; }
+      if (mouseButtons.delete(event.button)) onMouseUp(event);
+      return;
+    }
+    const point = pointers.get(event.pointerId);
+    if (!point) return;
+    clearTimeout(point.timer);
+    if (point.pressed) buttonEvent(0, false);
+    else if (!canceled && !scrolling && !point.longPressed) {
+      onMouseMove(event); buttonEvent(0, true); buttonEvent(0, false);
+    }
+    pointers.delete(event.pointerId);
+    if (!pointers.size) { scrolling = false; scrollRemainder = 0; }
+  };
+  const onPointerUp = event => finishPointer(event);
+  const onPointerCancel = event => finishPointer(event, true);
+  const releaseInputs = () => {
+    for (const point of pointers.values()) { clearTimeout(point.timer); if (point.pressed) buttonEvent(0, false); }
+    for (const button of mouseButtons) buttonEvent(button, false);
+    pointers.clear(); mouseButtons.clear(); scrolling = false; scrollRemainder = 0;
+    getSession()?.releaseAllInputs?.();
+  };
+  const onContextMenu = event => event.preventDefault();
+  const listeners = { keydown: onKeyDown, keyup: onKeyUp, pointerdown: onPointerDown, pointermove: onPointerMove, pointerup: onPointerUp, pointercancel: onPointerCancel, lostpointercapture: onPointerCancel, blur: releaseInputs, contextmenu: onContextMenu };
+  for (const [name, listener] of Object.entries(listeners)) canvas.addEventListener(name, listener);
   canvas.addEventListener('wheel', onWheel, { passive: false });
-  canvas.addEventListener('contextmenu', onContextMenu);
-
-  // 리스너 해제 함수 반환
   return () => {
-    canvas.removeEventListener('keydown', onKeyDown);
-    canvas.removeEventListener('keyup', onKeyUp);
-    canvas.removeEventListener('mousemove', onMouseMove);
-    canvas.removeEventListener('mousedown', onMouseDown);
-    canvas.removeEventListener('mouseup', onMouseUp);
+    releaseInputs();
+    for (const [name, listener] of Object.entries(listeners)) canvas.removeEventListener(name, listener);
     canvas.removeEventListener('wheel', onWheel);
-    canvas.removeEventListener('contextmenu', onContextMenu);
   };
 }
 

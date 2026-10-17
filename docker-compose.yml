@@ -10,4 +10,3 @@ services:
     environment:
       - PORT=8080
       - CONFIG_PATH=/conf.d/remotehub/config.json
-      - SESSION_SECRET=remotehub-custom-secret-change-me

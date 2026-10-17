@@ -2,6 +2,7 @@
 
 const tls = require('tls');
 const net = require('net');
+const crypto = require('crypto');
 const configManager = require('../config');
 
 // ── RDCleanPath ASN.1 DER Constants ──
@@ -67,22 +68,26 @@ function derWrapContext(tagNum, content) {
 }
 
 function derDecodeLength(buf, offset) {
+  if (offset >= buf.length) throw new Error('Truncated DER length');
   const first = buf[offset];
   if (first < 0x80) {
     return { length: first, bytesRead: 1 };
   }
   const numBytes = first & 0x7f;
+  if (!numBytes || numBytes > 4 || offset + numBytes >= buf.length) throw new Error('Invalid DER length');
   let length = 0;
   for (let i = 0; i < numBytes; i++) {
-    length = (length << 8) | buf[offset + 1 + i];
+    length = length * 256 + buf[offset + 1 + i];
   }
   return { length, bytesRead: 1 + numBytes };
 }
 
 function derDecodeTLV(buf, offset) {
+  if (!Number.isInteger(offset) || offset < 0 || offset + 2 > buf.length) throw new Error('Truncated DER field');
   const tag = buf[offset];
   const { length, bytesRead } = derDecodeLength(buf, offset + 1);
   const headerLen = 1 + bytesRead;
+  if (length > buf.length - offset - headerLen) throw new Error('Truncated DER value');
   const value = buf.slice(offset + headerLen, offset + headerLen + length);
   return { tag, value, totalLength: headerLen + length };
 }
@@ -118,6 +123,7 @@ function parseRDCleanPathRequest(data) {
     throw new Error(`Expected SEQUENCE (0x30), got 0x${outer.tag.toString(16)}`);
   }
 
+  if (outer.totalLength !== buf.length) throw new Error('Unexpected trailing RDCleanPath data');
   const children = derDecodeChildren(outer.value);
 
   let version = null;
@@ -126,9 +132,18 @@ function parseRDCleanPathRequest(data) {
   let x224ConnectionRequest = null;
   let preconnectionBlob = null;
 
+  const seen = new Set();
   for (const child of children) {
+    if ((child.tag & 0xe0) !== 0xa0) throw new Error('Expected explicit RDCleanPath field');
     const ctxTag = child.tag & 0x1f;
 
+    if (seen.has(ctxTag)) throw new Error('Duplicate RDCleanPath field');
+    seen.add(ctxTag);
+    const expectedTag = { 0: TAG_INTEGER, 2: TAG_UTF8STRING, 6: TAG_OCTET_STRING }[ctxTag];
+    if (expectedTag !== undefined) {
+      const inner = derDecodeTLV(child.value, 0);
+      if (inner.tag !== expectedTag || inner.totalLength !== child.value.length) throw new Error('Invalid RDCleanPath field type');
+    }
     switch (ctxTag) {
       case 0: { // version
         const intTlv = derDecodeTLV(child.value, 0);
@@ -164,10 +179,11 @@ function parseRDCleanPathRequest(data) {
   if (!destination) {
     throw new Error('Missing destination in RDCleanPath request');
   }
-  if (!x224ConnectionRequest) {
+  if (!x224ConnectionRequest || !x224ConnectionRequest.length) {
     throw new Error('Missing x224_connection_pdu in RDCleanPath request');
   }
 
+  if (x224ConnectionRequest.length < 4 || x224ConnectionRequest[0] !== 3 || x224ConnectionRequest.readUInt16BE(2) !== x224ConnectionRequest.length) throw new Error('Invalid X.224 request');
   return { destination, proxyAuth, x224ConnectionRequest, preconnectionBlob };
 }
 
@@ -228,7 +244,7 @@ function parseDestination(destination) {
   return { host, port: isNaN(port) ? 3389 : port };
 }
 
-function performRDPHandshake(host, port, x224Request) {
+function performRDPHandshake(host, port, x224Request, serverId) {
   return new Promise((resolve, reject) => {
     const logPrefix = `[RDP:${host}:${port}]`;
 
@@ -253,29 +269,38 @@ function performRDPHandshake(host, port, x224Request) {
       }
 
       if (x224Response.length >= 4 && bytesNeeded === 0) {
+        if (x224Response[0] !== 3 || x224Response[1] !== 0 || x224Response.readUInt16BE(2) < 4) { tcpSocket.destroy(); reject(new Error('Invalid X.224 response')); return; }
         bytesNeeded = (x224Response[2] << 8) | x224Response[3];
       }
 
       if (bytesNeeded > 0 && x224Response.length >= bytesNeeded) {
         tcpSocket.removeListener('data', onData);
+        if (x224Response.length > bytesNeeded) tcpSocket.unshift(x224Response.subarray(bytesNeeded));
+        x224Response = x224Response.subarray(0, bytesNeeded);
         console.log(`${logPrefix} Received X.224 Connection Confirm (${x224Response.length} bytes)`);
 
         const tlsSocket = tls.connect(
           {
             socket: tcpSocket,
-            servername: host,
+            servername: net.isIP(host) ? undefined : host,
             rejectUnauthorized: false
           },
           () => {
             console.log(`${logPrefix} TLS handshake completed`);
             const peerCert = tlsSocket.getPeerCertificate(true);
+            try {
+              if (!serverId || !peerCert.raw) throw new Error('Missing server identity');
+              configManager.trustRemoteIdentity(serverId, 'rdpCertificateFingerprint', crypto.createHash('sha256').update(peerCert.raw).digest('hex'));
+            } catch (err) { tlsSocket.destroy(); reject(err); return; }
             const certChain = extractCertChain(peerCert);
+            tcpSocket.setTimeout(0);
             console.log(`${logPrefix} Extracted ${certChain.length} certificate(s)`);
             resolve({ x224Response: Buffer.from(x224Response), certChain, tlsSocket });
           }
         );
 
         tlsSocket.once('error', (err) => {
+          tlsSocket.destroy();
           reject(new Error(`TLS handshake failed: ${err.message}`));
         });
       }
@@ -283,6 +308,7 @@ function performRDPHandshake(host, port, x224Request) {
 
     tcpSocket.on('data', onData);
 
+    tcpSocket.once('close', () => reject(new Error('Connection closed during handshake')));
     tcpSocket.once('error', (err) => {
       reject(new Error(`TCP connection failed: ${err.message}`));
     });
@@ -351,6 +377,7 @@ function setupRelay(ws, tlsSocket) {
   };
 
   tlsSocket.on('end', () => cleanup('TLS'));
+  tlsSocket.on('close', () => cleanup('TLS'));
   tlsSocket.on('error', (err) => {
     console.error(`${logPrefix} TLS error:`, err.message);
     cleanup('TLS (error)');
@@ -366,7 +393,11 @@ function setupRelay(ws, tlsSocket) {
 function handleRdpConnection(ws, req, server) {
   console.log(`[RDP Proxy] New WebSocket connection for server: ${server.name} (${server.host}:${server.port})`);
 
+  const firstMessageTimer = setTimeout(() => ws.close(1008, 'RDP handshake timed out'), 15000);
+  firstMessageTimer.unref();
+  ws.once('close', () => clearTimeout(firstMessageTimer));
   ws.once('message', async (data) => {
+    clearTimeout(firstMessageTimer);
     try {
       const requestData = Buffer.isBuffer(data) ? data : Buffer.from(data);
       const request = parseRDCleanPathRequest(requestData);
@@ -380,7 +411,8 @@ function handleRdpConnection(ws, req, server) {
       const { x224Response, certChain, tlsSocket } = await performRDPHandshake(
         targetHost,
         targetPort,
-        request.x224ConnectionRequest
+        request.x224ConnectionRequest,
+        server.id
       );
 
       const serverAddr = `${targetHost}:${targetPort}`;
@@ -401,7 +433,7 @@ function handleRdpConnection(ws, req, server) {
           ws.send(errorPdu);
         }
       } catch (_) {}
-      try { ws.close(1011, err.message); } catch (_) {}
+      try { ws.close(1011, 'RDP handshake failed'); } catch (_) {}
     }
   });
 

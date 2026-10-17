@@ -23,8 +23,10 @@ function handleWsConnection(ws, req, serverOverride) {
   // 대상 VNC TCP 소켓 연결
   const tcpSocket = new net.Socket();
   tcpSocket.setNoDelay(true);
+  tcpSocket.setTimeout(15000, () => { tcpSocket.destroy(new Error('VNC connection timed out')); });
 
   tcpSocket.connect(server.port, server.host, () => {
+    tcpSocket.setTimeout(0);
     console.log(`[Proxy] TCP connection established to ${server.host}:${server.port}`);
   });
 
@@ -69,7 +71,7 @@ function handleWsConnection(ws, req, serverOverride) {
   tcpSocket.on('error', (err) => {
     console.error(`[Proxy] TCP socket error for ${server.name}:`, err.message);
     if (ws.readyState === ws.OPEN) {
-      ws.close(1011, `VNC Connection Error: ${err.message}`);
+      ws.close(1011, 'VNC connection failed');
     }
   });
 

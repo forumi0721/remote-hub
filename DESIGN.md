@@ -5,7 +5,7 @@
 - **주요 특징**:
   - 단일 Docker 컨테이너 및 단일 포트(`:8080`) 서비스 (포털 UI + 뷰어 + VNC/RDP/SSH 웹 프록시 올인원).
   - 무거운 C 데몬(Apache Guacamole의 `guacd`) 없이, 순수 Node.js 스트림 및 WebAssembly 기반 클라이언트로 고성능 처리.
-  - SSH 개인키(Key) 인증 및 24시간 세션 영속성(`activeSshSessions`)을 보장하는 스마트 세션 풀 지원.
+  - SSH 개인키(Key) 인증 및 브라우저 분리 후 최대 24시간 세션 유지(`activeSshSessions`)을 보장하는 스마트 세션 풀 지원.
   - 브라우저 탭 스타일 멀티 세션 워크스페이스 및 접이식 좌측 사이드바 패널.
   - 서버 그룹(Group) 분류 및 태그(Tags) 시스템 (상단 필터 바, 사이드바 아코디언, 통합 검색).
   - 서버 목록 출력 순서 변경 (드래그 앤 드롭 및 ▲/▼ 버튼).
@@ -132,7 +132,7 @@ flowchart TD
 - `PUT /api/auth/settings`: 마스터 패스워드 설정 변경
 - `GET /api/servers`: 등록된 서버 목록 (비밀번호 및 개인키 마스킹, group, tags 포함)
 - `PUT /api/servers/reorder`: 서버 순서 재배치 (`{ serverIds: string[] }`)
-- `GET /api/servers/:id/connection`: 특정 서버 접속 상세 정보
+- `GET /api/servers/:id/connection`: 특정 서버 접속 상세 정보 (SSH 비밀값 제외)
 - `POST /api/servers`: 새 서버 등록
 - `PUT /api/servers/:id`: 서버 정보 수정
 - `DELETE /api/servers/:id`: 서버 삭제
@@ -143,6 +143,10 @@ flowchart TD
 ### WebSocket
 - `/ws?serverId=<id>&sessionKey=<key>&forceNew=<bool>`:
   - `serverId`: 대상 원격 서버 ID
-  - `sessionKey`: 백엔드 영구 세션 식별 키 (생략 시 기본 세션 자동 복원)
+  - `sessionKey`: 백엔드 영구 세션 식별 키 (생략 시 분리된 SSH 세션 자동 복원)
   - `forceNew`: 기존 백그라운드 세션 무시 및 완전 신규 세션 강제 생성
   - 대상 서버의 프로토콜에 따라 VNC, RDP, SSH 프록시로 자동 디스패치
+
+## 보안 및 세션 수명
+
+SSH 세션과 출력 기록은 프로세스 메모리에 저장되며 재시작 시 소실됩니다. VNC/RDP 연결은 브라우저 연결 종료 시 함께 종료됩니다. 서버 삭제 시 해당 SSH 세션도 종료합니다. 설정 읽기 실패는 접근을 차단하며 설정 파일을 덮어쓰지 않습니다. SSH 호스트 키와 RDP 인증서는 최초 접속 시 SHA-256 지문을 저장하고 이후 비교하는 TOFU 방식을 사용합니다. 최초 접속 보장 및 지문 교체 절차는 README의 운영 항목을 참고하세요.

@@ -2,8 +2,8 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Remote Hub - VNC & RDP 원격 서버 관리 포털</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Remote Hub - VNC · RDP · SSH 원격 서버 관리</title>
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
       <div class="logo-icon">HUB</div>
       <div class="logo-text">
         <h1>Remote Hub</h1>
-        <span>VNC & RDP 통합 원격 데스크톱 포털</span>
+        <span>VNC · RDP · SSH 통합 원격 접속</span>
       </div>
     </div>
     <div class="header-actions">
@@ -28,9 +28,10 @@
   <main class="container">
     <div class="controls-bar">
       <div class="search-box">
-        <input type="text" id="search-input" placeholder="서버 이름, 호스트, 그룹, 태그(#)로 검색...">
+        <input type="search" aria-label="서버 검색" id="search-input" placeholder="서버 이름, 호스트, 그룹, 태그(#)로 검색...">
       </div>
-      <div>
+      <div class="controls-actions">
+        <button id="btn-refresh" class="btn btn-secondary" type="button">상태 새로고침</button>
         <button id="btn-open-add-server" class="btn btn-primary">
           ➕ 새 원격 서버 추가
         </button>
@@ -51,13 +52,10 @@
       </a>
     </div>
 
+    <p id="list-summary" class="list-summary" role="status" aria-live="polite"></p>
     <!-- 서버 카드 그리드 -->
     <div id="servers-grid" class="servers-grid">
-      <div class="empty-state">
-        <h3>등록된 원격 서버가 없습니다.</h3>
-        <p>상단의 "새 원격 서버 추가" 버튼을 눌러 VNC 또는 RDP 서버를 등록해 보세요.</p>
-        <button class="btn btn-primary" onclick="openAddServerModal()">서버 추가하기</button>
-      </div>
+      <div class="empty-state" role="status"><h3>서버 목록을 불러오는 중…</h3></div>
     </div>
   </main>
 
@@ -84,7 +82,7 @@
               </label>
               <label class="protocol-radio-label">
                 <input type="radio" name="server-protocol" value="ssh">
-                <span>💻 SSH 터미널</span>
+                <span>💻 SSH</span>
               </label>
             </div>
           </div>
@@ -99,7 +97,7 @@
             </div>
             <div class="form-group" style="flex: 1;">
               <label for="server-port" id="label-server-port">포트 *</label>
-              <input type="number" id="server-port" value="5900" required placeholder="5900">
+              <input type="number" id="server-port" min="1" max="65535" step="1" value="5900" required placeholder="5900">
             </div>
           </div>
 
@@ -175,6 +173,8 @@
             </div>
           </div>
 
+          <details id="server-optional" class="optional-fields">
+            <summary>그룹 · 태그 · 설명 (선택)</summary>
           <div class="form-row">
             <div class="form-group" style="flex: 1;">
               <label for="server-group">그룹 분류 (Group)</label>
@@ -191,6 +191,7 @@
             <label for="server-desc">설명 / 비고</label>
             <textarea id="server-desc" rows="2" placeholder="용도, 사양, 담당자 등"></textarea>
           </div>
+          </details>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" onclick="closeModal('modal-server')">취소</button>
@@ -216,11 +217,11 @@
             </label>
           </div>
 
-          <div id="auth-fields" style="display: none; border-top: 1px solid var(--border-color); padding-top: 1rem;">
             <div class="form-group" id="group-current-password" style="display: none;">
               <label for="setting-current-password">현재 마스터 비밀번호</label>
               <input type="password" id="setting-current-password" placeholder="기존 비밀번호 입력">
             </div>
+          <div id="auth-fields" style="display: none; border-top: 1px solid var(--border-color); padding-top: 1rem;">
             <div class="form-group">
               <label for="setting-new-password">새 마스터 비밀번호</label>
               <input type="password" id="setting-new-password" placeholder="새 비밀번호 입력">
@@ -252,7 +253,7 @@
           </p>
           <div class="form-group">
             <label for="login-password">마스터 비밀번호</label>
-            <input type="password" id="login-password" required placeholder="비밀번호 입력" autofocus>
+            <input type="password" id="login-password" required autocomplete="current-password" placeholder="비밀번호 입력">
           </div>
           <div id="login-error" style="color: var(--danger); font-size: 0.85rem; display: none;"></div>
         </div>
@@ -263,6 +264,7 @@
     </div>
   </div>
 
+  <script src="/js/ui.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

@@ -1,6 +1,8 @@
 'use strict';
 
 const { Client } = require('ssh2');
+const { StringDecoder } = require('string_decoder');
+const configManager = require('../config');
 
 // 인메모리 지속 세션 풀 (sessionKey -> PersistentSshSession)
 const activeSshSessions = new Map();
@@ -34,6 +36,7 @@ class PersistentSshSession {
     this.sshStream = null;
     this.attachedWs = null;
     this.historyBuffer = '';
+    this.decoder = new StringDecoder('utf8');
     this.maxBufferSize = 512 * 1024; // 512KB 화면 스크롤백 버퍼
     this.lastCols = 80;
     this.lastRows = 24;
@@ -50,6 +53,11 @@ class PersistentSshSession {
     console.log(`${this.logPrefix} Creating new persistent SSH session for ${this.server.host}:${this.server.port || 22}`);
 
     const connectConfig = {
+      hostHash: 'sha256',
+      hostVerifier: fingerprint => {
+        try { return configManager.trustRemoteIdentity(this.server.id, 'sshHostKeyFingerprint', fingerprint); }
+        catch (err) { console.error(`${this.logPrefix} Host verification failed:`, err.message); return false; }
+      },
       host: this.server.host,
       port: this.server.port || 22,
       username: this.server.username || 'root',
@@ -86,7 +94,9 @@ class PersistentSshSession {
           return;
         }
 
+        if (this.isDestroyed) { stream.destroy(); return; }
         this.sshStream = stream;
+        if (this.attachedWs?.readyState === 1) this.attachedWs.send(JSON.stringify({ type: 'ready' }));
 
         // PTY 윈도우 크기 동기화 확정
         try {
@@ -95,16 +105,19 @@ class PersistentSshSession {
 
         // SSH -> History Buffer & WebSocket
         stream.on('data', (data) => {
-          const text = data.toString('utf-8');
-          // historyBuffer에는 화면 복원용 데이터만 누적 (단말 질의 시퀀스 제거)
-          this.historyBuffer += stripTerminalQueries(text);
-          if (this.historyBuffer.length > this.maxBufferSize) {
-            this.historyBuffer = this.historyBuffer.slice(-Math.floor(this.maxBufferSize / 2));
+          const text = this.decoder.write(data);
+          // Preserve complete UTF-8 output; strip terminal queries after chunks are joined on replay.
+          this.historyBuffer += text;
+          if (Buffer.byteLength(this.historyBuffer, 'utf8') > this.maxBufferSize) {
+            const tail = Buffer.from(this.historyBuffer).subarray(-Math.floor(this.maxBufferSize / 2));
+            let start = 0;
+            while (start < tail.length && (tail[start] & 0xc0) === 0x80) start++;
+            this.historyBuffer = tail.subarray(start).toString('utf8');
           }
 
           if (this.attachedWs && this.attachedWs.readyState === 1) {
             try {
-              this.attachedWs.send(text);
+              this.attachedWs.send(Buffer.from(text));
             } catch (e) {
               console.error(`${this.logPrefix} Error sending to WebSocket:`, e.message);
             }
@@ -136,7 +149,7 @@ class PersistentSshSession {
       console.error(`${this.logPrefix} SSH client error:`, err.message);
       if (this.attachedWs && this.attachedWs.readyState === 1) {
         this.attachedWs.send(`\r\n\x1b[31m[RemoteHub] SSH Connection Error: ${err.message}\x1b[0m\r\n`);
-        this.attachedWs.close(1011, `SSH Error: ${err.message}`);
+        this.attachedWs.close(1011, 'SSH connection failed');
       }
       this.destroy();
     });
@@ -157,7 +170,7 @@ class PersistentSshSession {
       console.error(`${this.logPrefix} Exception during sshClient.connect:`, err.message);
       if (initialWs.readyState === 1) {
         initialWs.send(`\r\n\x1b[31m[RemoteHub] Connection Initialization Failed: ${err.message}\x1b[0m\r\n`);
-        initialWs.close(1011, err.message);
+        initialWs.close(1011, 'SSH initialization failed');
       }
       this.destroy();
     }
@@ -170,9 +183,11 @@ class PersistentSshSession {
       this.disconnectTimer = null;
     }
 
-    if (this.attachedWs && this.attachedWs !== newWs) {
+    const previousWs = this.attachedWs;
+    this.attachedWs = newWs;
+    if (previousWs && previousWs !== newWs) {
       try {
-        this.attachedWs.close(1000, 'Replaced by new connection');
+        previousWs.close(1000, 'Replaced by new connection');
       } catch (_) {}
     }
 
@@ -181,10 +196,13 @@ class PersistentSshSession {
 
     // 재연결 안내 메시지 및 이전 터미널 출력 버퍼 즉각 재생
     if (newWs.readyState === 1) {
+      newWs.send(JSON.stringify({ type: 'replay-start' }));
       newWs.send('\r\n\x1b[32m[RemoteHub] 기존 원격 세션에 다시 연결되었습니다.\x1b[0m\r\n');
       if (this.historyBuffer) {
-        newWs.send(stripTerminalQueries(this.historyBuffer));
+        newWs.send(Buffer.from(stripTerminalQueries(this.historyBuffer)));
       }
+      newWs.send(JSON.stringify({ type: 'replay-end' }));
+      if (this.isReady && this.sshStream) newWs.send(JSON.stringify({ type: 'ready' }));
       if (this.sshStream) {
         try {
           this.sshStream.setWindow(this.lastRows, this.lastCols, 0, 0);
@@ -195,6 +213,7 @@ class PersistentSshSession {
 
   bindWs(ws) {
     ws.on('message', (msg) => {
+      if (this.attachedWs !== ws || this.isDestroyed) return;
       try {
         const text = msg.toString('utf-8');
         // 리사이즈 등 JSON 제어 메시지 확인
@@ -204,6 +223,7 @@ class PersistentSshSession {
             if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
               const newCols = Number(parsed.cols) || 80;
               const newRows = Number(parsed.rows) || 24;
+              if (![newCols, newRows].every(n => Number.isInteger(n) && n >= 1 && n <= 1000)) return;
               if (newCols === this.lastCols && newRows === this.lastRows) {
                 return;
               }
@@ -234,32 +254,25 @@ class PersistentSshSession {
       }
     });
 
-    ws.on('close', () => {
-      if (this.attachedWs === ws) {
-        this.attachedWs = null;
-        console.log(`${this.logPrefix} WebSocket detached. Keeping SSH session alive in background.`);
-        if (this.disconnectTimer) {
-          clearTimeout(this.disconnectTimer);
-        }
-        this.disconnectTimer = setTimeout(() => {
-          console.log(`${this.logPrefix} Retention timeout expired. Destroying session.`);
-          this.destroy();
-        }, this.retentionTimeoutMs);
-      }
-    });
-
+    const detach = () => {
+      if (this.attachedWs !== ws) return;
+      this.attachedWs = null;
+      if (this.isDestroyed) return;
+      if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+      this.disconnectTimer = setTimeout(() => this.destroy(), this.retentionTimeoutMs);
+      this.disconnectTimer.unref();
+    };
+    ws.on('close', detach);
     ws.on('error', (err) => {
       console.error(`${this.logPrefix} WebSocket error:`, err.message);
-      if (this.attachedWs === ws) {
-        this.attachedWs = null;
-      }
+      detach();
     });
   }
 
   destroy() {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
-    activeSshSessions.delete(this.key);
+    if (activeSshSessions.get(this.key) === this) activeSshSessions.delete(this.key);
 
     if (this.disconnectTimer) {
       clearTimeout(this.disconnectTimer);
@@ -319,8 +332,12 @@ function handleSshConnection(ws, req, server) {
   const existingSession = activeSshSessions.get(sessionKey);
 
   if (existingSession && !existingSession.isDestroyed) {
-    const isViable = existingSession.isReady && existingSession.sshStream && !existingSession.sshStream.destroyed;
-    if (forceNew || !isViable) {
+    const streamClosed = existingSession.sshStream && existingSession.sshStream.destroyed;
+    if (existingSession.server.id !== server.id) {
+      ws.close(1008, 'Session does not belong to this server');
+      return;
+    }
+    if (forceNew || streamClosed) {
       console.log(`[SSH:${server.name}] Existing session ${sessionKey} is ${forceNew ? 'force-renewed' : 'not viable'}. Re-creating.`);
       existingSession.destroy();
     } else {
@@ -335,6 +352,8 @@ function handleSshConnection(ws, req, server) {
 }
 
 module.exports = {
+  PersistentSshSession,
+  stripTerminalQueries,
   handleSshConnection,
   activeSshSessions
 };

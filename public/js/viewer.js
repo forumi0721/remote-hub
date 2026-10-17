@@ -1,4 +1,5 @@
 import RFB from '/novnc/core/rfb.js';
+import { TERMINAL_KEYS, terminalControlCharacter, sendRdpText } from './mobile-input.js';
 import { setupRdpInputHandlers, sendRdpCtrlAltDel } from './rdp-input.js';
 
 // 전역 상태
@@ -7,6 +8,8 @@ const sessions = new Map(); // tabId -> SessionData
 let activeTabId = null;
 let tabCounter = 0;
 let rdpWasmModules = null;
+let rdpWasmPromise = null;
+const pendingTabs = new Map();
 
 // DOM 엘리먼트
 const sidebarEl = document.getElementById('viewer-sidebar');
@@ -69,6 +72,51 @@ function showClipboardToast(message) {
   }, 2500);
 }
 
+const mobileInputBar = document.getElementById('mobile-input-bar');
+const terminalKeys = document.getElementById('terminal-keys');
+const ctrlButton = document.getElementById('btn-terminal-ctrl');
+const keyboardButton = document.getElementById('btn-mobile-keyboard');
+const sessionMenuButton = document.getElementById('btn-session-menu');
+const rdpPanButton = document.getElementById('btn-rdp-pan');
+rdpPanButton.addEventListener('click', () => {
+  const session = getActiveSession();
+  const canvas = session?.viewEl.querySelector('canvas');
+  if (session?.engine !== 'rdp' || !canvas) return;
+  session.rdpPan = !session.rdpPan;
+  canvas.dataset.touchMode = session.rdpPan ? 'pan' : 'remote';
+  rdpPanButton.setAttribute('aria-pressed', String(session.rdpPan));
+  rdpPanButton.textContent = session.rdpPan ? '화면 이동 중 (원격 입력 꺼짐)' : '화면 이동 모드';
+});
+const rdpResolution = document.getElementById('rdp-resolution');
+function resetControlKey() { ctrlButton.setAttribute('aria-pressed', 'false'); }
+terminalKeys.addEventListener('pointerdown', event => { if (event.target.closest('button')) event.preventDefault(); });
+terminalKeys.addEventListener('click', event => {
+  const button = event.target.closest('button');
+  const session = getActiveSession();
+  if (!button || session?.engine !== 'ssh' || session.instance?.ws?.readyState !== WebSocket.OPEN) return;
+  if (button === ctrlButton) { ctrlButton.setAttribute('aria-pressed', String(ctrlButton.getAttribute('aria-pressed') !== 'true')); return; }
+  let key = TERMINAL_KEYS[button.dataset.terminalKey];
+  if (key?.startsWith('\x1b[') && session.instance.term?.modes?.applicationCursorKeys) key = key.replace('[', 'O');
+  if (key !== undefined) session.instance.ws.send(key);
+  resetControlKey();
+});
+keyboardButton.addEventListener('click', () => {
+  const session = getActiveSession();
+  if (session?.engine === 'ssh') session.instance?.term?.focus();
+  else if (session) openClipboardModal();
+});
+rdpResolution.addEventListener('change', () => {
+  const session = getActiveSession();
+  if (session?.engine !== 'rdp' || !session.instance) return;
+  const [width, height] = rdpResolution.value.split('x').map(Number);
+  try { session.instance.resize(width, height); session.rdpResolution = rdpResolution.value; }
+  catch (err) { showNotice('해상도를 변경하지 못했습니다: ' + err.message); }
+});
+
+const compactViewport = window.matchMedia('(max-width: 900px)');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+const viewerTools = document.getElementById('viewer-tools');
+
 // 1. 사이드바 제어 (열기/닫기)
 function setSidebarOpen(open) {
   if (open) {
@@ -78,23 +126,49 @@ function setSidebarOpen(open) {
     sidebarEl.classList.add('closed');
     btnOpenSidebar.style.display = 'flex';
   }
-  localStorage.setItem('remotehub_sidebar_open', open ? '1' : '0');
+  sidebarBackdrop.hidden = !open || !compactViewport.matches;
+  sidebarEl.inert = !open;
+  document.querySelector('.viewer-main').inert = open && compactViewport.matches;
+  if (open && compactViewport.matches) { sidebarEl.setAttribute('role', 'dialog'); sidebarEl.setAttribute('aria-modal', 'true'); sidebarEl.setAttribute('aria-label', '원격 서버 목록'); }
+  else { sidebarEl.removeAttribute('role'); sidebarEl.removeAttribute('aria-modal'); }
+  sidebarEl.setAttribute('aria-hidden', String(!open));
+  btnOpenSidebar.setAttribute('aria-expanded', String(open));
+  btnOpenSidebar.setAttribute('aria-controls', 'viewer-sidebar');
+  if (!compactViewport.matches) localStorage.setItem('remotehub_sidebar_open', open ? '1' : '0');
   // 터미널 또는 캔버스 리사이즈 트리거
   setTimeout(() => {
     const active = getActiveSession();
-    if (active && active.engine === 'ssh' && active.fitAddon) {
-      active.fitAddon.fit();
+    if (active && active.engine === 'ssh' && active.instance?.fitAddon) {
+      active.instance.fitAddon.fit();
     }
   }, 300);
 }
 
-btnToggleSidebar.addEventListener('click', () => setSidebarOpen(false));
-btnOpenSidebar.addEventListener('click', () => setSidebarOpen(true));
+btnToggleSidebar.addEventListener('click', () => { setSidebarOpen(false); btnOpenSidebar.focus(); });
+btnOpenSidebar.addEventListener('click', () => { setSidebarOpen(true); sidebarEl.querySelector('input').focus(); });
+sidebarBackdrop.addEventListener('click', () => { setSidebarOpen(false); btnOpenSidebar.focus(); });
+compactViewport.addEventListener('change', () => setSidebarOpen(!compactViewport.matches && localStorage.getItem('remotehub_sidebar_open') !== '0'));
+viewerTools.addEventListener('click', event => { if (event.target.closest('button') && !event.target.closest('.ssh-font-controls')) viewerTools.open = false; });
+document.addEventListener('click', event => { if (!viewerTools.contains(event.target)) viewerTools.open = false; });
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || document.querySelector('.modal-overlay.active')) return;
+  viewerTools.open = false;
+  if (compactViewport.matches && !sidebarEl.classList.contains('closed')) { setSidebarOpen(false); btnOpenSidebar.focus(); }
+});
+
+sidebarEl.addEventListener('keydown', event => {
+  if (event.key === 'Tab' && compactViewport.matches && !sidebarEl.classList.contains('closed')) {
+    const controls = [...sidebarEl.querySelectorAll('button, input, a[href], [tabindex="0"]')].filter(el => el.getClientRects().length && !el.disabled);
+    if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1)?.focus(); }
+    else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0]?.focus(); }
+  }
+  if (['Enter', ' '].includes(event.key) && event.target.matches('[role="button"], .sidebar-group-header')) { event.preventDefault(); event.target.click(); }
+});
 
 // 2. 서버 목록 로드 및 사이드바 렌더링
 async function loadServers() {
   try {
-    const res = await fetch('/api/servers');
+    const res = await apiFetch('/api/servers');
     if (!res.ok) {
       if (res.status === 401) {
         window.location.href = '/';
@@ -143,7 +217,7 @@ function renderSidebarServers(servers) {
       : '';
     return `
       <div class="sidebar-server-item" data-id="${s.id}">
-        <div class="sidebar-item-left" onclick="onSidebarItemClick('${s.id}')">
+        <div class="sidebar-item-left" role="button" tabindex="0" onclick="onSidebarItemClick('${s.id}')">
           <span class="protocol-badge ${proto}">${proto}</span>
           <div class="sidebar-item-info">
             <div class="sidebar-item-name">${escapeHtml(s.name)}</div>
@@ -180,7 +254,7 @@ function renderSidebarServers(servers) {
     const isCollapsed = collapsedSidebarGroups.has(groupId);
     html += `
       <div class="sidebar-group">
-        <div class="sidebar-group-header" onclick="toggleSidebarGroup('${groupId}')">
+        <div class="sidebar-group-header" role="button" tabindex="0" onclick="toggleSidebarGroup('${groupId}')">
           <span id="group-arrow-${groupId}" class="group-toggle-arrow">${isCollapsed ? '▶' : '▼'}</span>
           <span>📁 ${escapeHtml(groupName)}</span>
           <span style="font-size: 0.7rem; color: var(--text-muted); margin-left: auto;">${groupServers.length}</span>
@@ -212,6 +286,7 @@ sidebarSearchInput.addEventListener('input', (e) => {
 });
 
 window.onSidebarItemClick = function(serverId) {
+  if (compactViewport.matches) setSidebarOpen(false);
   // 이미 열린 탭이 있다면 해당 탭 활성화, 없으면 새로 열기
   for (const [tabId, session] of sessions.entries()) {
     if (session.serverId === serverId) {
@@ -223,11 +298,19 @@ window.onSidebarItemClick = function(serverId) {
 };
 
 window.openNewTab = function(serverId, autoSwitch = true, isDuplicate = false) {
+  if (compactViewport.matches) setSidebarOpen(false);
   createSessionTab(serverId, autoSwitch, null, isDuplicate);
 };
 
 // 3. 멀티 세션 탭 생성
-async function createSessionTab(serverId, autoSwitch = true, customTabId = null, isDuplicate = false, customSessionKey = null) {
+function createSessionTab(...args) {
+  const deduplicate = !args[2] && !args[3];
+  if (deduplicate && pendingTabs.has(args[0])) return pendingTabs.get(args[0]);
+  const promise = createSessionTabImpl(...args).finally(() => { if (deduplicate) pendingTabs.delete(args[0]); });
+  if (deduplicate) pendingTabs.set(args[0], promise);
+  return promise;
+}
+async function createSessionTabImpl(serverId, autoSwitch = true, customTabId = null, isDuplicate = false, customSessionKey = null) {
   tabCounter++;
   const tabId = customTabId || `tab-${Date.now()}-${tabCounter}`;
   let sessionKey = customSessionKey;
@@ -245,11 +328,11 @@ async function createSessionTab(serverId, autoSwitch = true, customTabId = null,
   // 서버 상세 정보 가져오기
   let serverInfo = null;
   try {
-    const res = await fetch(`/api/servers/${serverId}/connection`);
+    const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/connection`);
     if (!res.ok) throw new Error('서버 접속 정보를 불러올 수 없습니다.');
     serverInfo = await res.json();
   } catch (err) {
-    alert('접속 정보 조회 실패: ' + err.message);
+    showNotice('접속 정보 조회 실패: ' + err.message);
     return;
   }
 
@@ -260,11 +343,24 @@ async function createSessionTab(serverId, autoSwitch = true, customTabId = null,
   const tabEl = document.createElement('div');
   tabEl.className = 'session-tab';
   tabEl.id = `tab-header-${tabId}`;
+  tabEl.setAttribute('role', 'tab');
+  tabEl.setAttribute('aria-selected', 'false');
+  tabEl.tabIndex = -1;
+  tabEl.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Delete', 'Enter', ' '].includes(event.key) || event.target.closest('button')) return;
+    event.preventDefault();
+    const ids = [...sessions.keys()];
+    const index = ids.indexOf(tabId);
+    if (event.key === 'Delete') { closeTab(tabId); return; }
+    const next = event.key === 'Home' ? ids[0] : event.key === 'End' ? ids.at(-1) : event.key === 'ArrowLeft' ? ids[(index + ids.length - 1) % ids.length] : event.key === 'ArrowRight' ? ids[(index + 1) % ids.length] : tabId;
+    activateTab(next);
+    sessions.get(next)?.tabEl.focus();
+  });
   tabEl.innerHTML = `
     <span>${icon}</span>
     <span class="tab-title-text" title="${escapeHtml(serverInfo.name)}">${escapeHtml(serverInfo.name)}</span>
     <span class="tab-status-dot connecting" id="tab-dot-${tabId}">●</span>
-    <button class="tab-close-btn" title="닫기">&times;</button>
+    <button class="tab-close-btn" aria-label="세션 종료 및 탭 닫기" title="세션 종료 및 탭 닫기">&times;</button>
   `;
 
   tabEl.addEventListener('click', (e) => {
@@ -288,6 +384,9 @@ async function createSessionTab(serverId, autoSwitch = true, customTabId = null,
   const sessionView = document.createElement('div');
   sessionView.className = `session-view ${proto === 'ssh' ? 'ssh-view' : ''}`;
   sessionView.id = `session-view-${tabId}`;
+  sessionView.setAttribute('role', 'tabpanel');
+  sessionView.setAttribute('aria-labelledby', tabEl.id);
+  tabEl.setAttribute('aria-controls', sessionView.id);
   sessionsWorkspace.appendChild(sessionView);
 
   // 3) 세션 객체 생성
@@ -302,6 +401,7 @@ async function createSessionTab(serverId, autoSwitch = true, customTabId = null,
     status: 'connecting',
     scaleEnabled: true,
     instance: null,
+    generation: 0,
     cleanupHandlers: [],
     forceNew: false
   };
@@ -348,11 +448,14 @@ function activateTab(tabId) {
   const session = sessions.get(tabId);
   if (!session) return;
 
+  resetControlKey();
   activeTabId = tabId;
 
   // 헤더 active 클래스 토글
-  document.querySelectorAll('.session-tab').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.session-tab').forEach(el => { el.classList.remove('active'); el.setAttribute('aria-selected', 'false'); el.tabIndex = -1; });
   session.tabEl.classList.add('active');
+  session.tabEl.setAttribute('aria-selected', 'true');
+  session.tabEl.tabIndex = 0;
   session.tabEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
 
   // 뷰 DOM active 토글
@@ -392,6 +495,21 @@ function activateTab(tabId) {
 
 // 상단 툴바 동기화
 function updateToolbarForSession(session) {
+  btnReconnect.disabled = !session || Boolean(session.reconnecting);
+  sessionMenuButton.disabled = !session;
+  mobileInputBar.hidden = !session;
+  terminalKeys.hidden = session?.engine !== 'ssh';
+  keyboardButton.textContent = session?.engine === 'ssh' ? '키보드' : '텍스트 입력';
+  keyboardButton.disabled = !session || session.status !== 'connected';
+  terminalKeys.querySelectorAll('button').forEach(button => { button.disabled = !session || session.status !== 'connected'; });
+  document.getElementById('rdp-resolution-control').hidden = session?.engine !== 'rdp';
+  document.getElementById('rdp-touch-hint').hidden = session?.engine !== 'rdp';
+  rdpPanButton.hidden = session?.engine !== 'rdp';
+  rdpPanButton.setAttribute('aria-pressed', String(Boolean(session?.rdpPan)));
+  rdpPanButton.textContent = session?.rdpPan ? '화면 이동 중 (원격 입력 꺼짐)' : '화면 이동 모드';
+  rdpResolution.disabled = session?.status !== 'connected';
+  rdpResolution.value = session?.rdpResolution || '1280x720';
+  if (!session) resetControlKey();
   if (!session) {
     tabStatusEl.style.display = 'none';
     btnCad.style.display = 'none';
@@ -426,6 +544,27 @@ function updateToolbarForSession(session) {
 
 function updateSessionStatus(session, status, customMsg = null) {
   session.status = status;
+  if (session.engine !== 'ssh') {
+    let feedback = session.viewEl.querySelector('.session-feedback');
+    if (!feedback) {
+      feedback = document.createElement('div');
+      feedback.className = 'session-feedback';
+      const message = document.createElement('span');
+      const retry = document.createElement('button');
+      retry.className = 'btn btn-primary btn-sm';
+      retry.textContent = '다시 연결';
+      retry.addEventListener('click', () => reconnectSession(session.tabId));
+      feedback.append(message, retry);
+      session.viewEl.appendChild(feedback);
+    }
+    feedback.hidden = status === 'connected';
+    feedback.setAttribute('role', status === 'disconnected' ? 'alert' : 'status');
+    feedback.firstElementChild.textContent = customMsg || getStatusMessage(status);
+    feedback.lastElementChild.hidden = status !== 'disconnected';
+  }
+  if (session.tabId === activeTabId) updateToolbarForSession(session);
+  session.tabEl.setAttribute('aria-label', `${session.serverInfo.name} · ${customMsg || getStatusMessage(status)}`);
+  session.tabEl.title = `${session.serverInfo.name} · ${customMsg || getStatusMessage(status)}`;
   const dot = document.getElementById(`tab-dot-${session.tabId}`);
   if (dot) {
     dot.className = `tab-status-dot ${status}`;
@@ -457,7 +596,7 @@ function closeTab(tabId, terminateBackend = true) {
     }
     // 2) REST API로도 백엔드 세션 제거 확실히 호출 (WS 상태와 무관하게 보장)
     if (session.sessionKey) {
-      fetch(`/api/sessions/${encodeURIComponent(session.sessionKey)}`, { method: 'DELETE' }).catch(() => {});
+      apiFetch(`/api/sessions/${encodeURIComponent(session.sessionKey)}`, { method: 'DELETE', keepalive: true }).then(response => { if (!response.ok) showNotice('세션 종료를 확인하지 못했습니다. 대시보드에서 다시 확인해 주세요.'); }).catch(() => showNotice('세션 종료 요청에 실패했습니다. 대시보드에서 다시 확인해 주세요.'));
     }
   }
 
@@ -488,6 +627,8 @@ function closeTab(tabId, terminateBackend = true) {
 }
 
 function destroySession(session) {
+  session.generation++;
+  if (pendingPasswordTabId === session.tabId) closePasswordModal();
   session.cleanupHandlers.forEach(fn => {
     try { fn(); } catch (_) {}
   });
@@ -497,6 +638,7 @@ function destroySession(session) {
     try { session.instance.disconnect(); } catch (_) {}
   } else if (session.engine === 'rdp' && session.instance) {
     try {
+      session.instance.shutdown?.();
       if (typeof session.instance.free === 'function') {
         session.instance.free();
       }
@@ -513,12 +655,15 @@ function destroySession(session) {
 
 // 6. SSH 세션 구동
 async function startSshSession(session) {
+  const generation = session.generation;
+  const current = () => sessions.get(session.tabId) === session && session.generation === generation;
   const server = session.serverInfo;
   updateSessionStatus(session, 'connecting', '터미널 준비 중...');
 
   try {
     const { Terminal } = await import('/xterm/lib/xterm.mjs');
     const { FitAddon } = await import('/xterm-addon-fit/lib/addon-fit.mjs');
+    if (!current()) return;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -550,9 +695,11 @@ async function startSshSession(session) {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(session.viewEl);
+    const terminalInput = session.viewEl.querySelector('textarea');
+    if (terminalInput) { terminalInput.setAttribute('autocapitalize', 'off'); terminalInput.setAttribute('autocomplete', 'off'); terminalInput.spellcheck = false; }
 
     requestAnimationFrame(() => {
-      fitAddon.fit();
+      if (current()) fitAddon.fit();
     });
 
     term.focus();
@@ -560,12 +707,13 @@ async function startSshSession(session) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const sessionKeyParam = encodeURIComponent(session.sessionKey || `server_${server.id}`);
     const forceNewParam = session.forceNew ? '&forceNew=true' : '';
-    const wsUrl = `${protocol}//${window.location.host}/ws?serverId=${server.id}&sessionKey=${sessionKeyParam}${forceNewParam}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws?serverId=${encodeURIComponent(server.id)}&sessionKey=${sessionKeyParam}${forceNewParam}`;
     session.forceNew = false;
 
     updateSessionStatus(session, 'connecting', `${server.name} 접속 중...`);
 
     const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
 
     let lastSentCols = 0;
     let lastSentRows = 0;
@@ -583,13 +731,22 @@ async function startSshSession(session) {
     };
 
     ws.onopen = () => {
-      updateSessionStatus(session, 'connected', `연결됨: ${server.name}`);
+      if (!current()) { ws.close(); return; }
+      updateSessionStatus(session, 'connecting', 'SSH 인증 중…');
       fitAddon.fit();
       sendResize();
     };
 
+    let replaying = false;
     let firstDataReceived = false;
     ws.onmessage = (event) => {
+      if (!current()) return;
+      if (event.data === JSON.stringify({ type: 'ready' })) { updateSessionStatus(session, 'connected', `연결됨: ${server.name}`); return; }
+      if (event.data === JSON.stringify({ type: 'replay-start' })) { replaying = true; return; }
+      if (event.data === JSON.stringify({ type: 'replay-end' })) {
+        term.write('', () => { replaying = false; });
+        return;
+      }
       if (!firstDataReceived) {
         firstDataReceived = true;
         // SSH pty가 뜬 직후 창 크기 재확인 및 전달 (vim/htop 등 전체화면 출력 보장)
@@ -599,34 +756,29 @@ async function startSshSession(session) {
 
       if (typeof event.data === 'string') {
         term.write(event.data);
-      } else if (event.data instanceof Blob) {
-        event.data.text().then(text => term.write(text));
+      } else if (event.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(event.data));
       }
     };
 
     term.onData((data) => {
-      // 자동 단말 응답 시퀀스(DA, CPR, OSC 색상 응답, DECRQM 응답 등) 차단
-      // 정상적인 사용자 키보드 입력은 이러한 응답 시퀀스를 생성하지 않습니다.
-      if (
-        (data.startsWith('\x1b[?') && (data.endsWith('c') || data.endsWith('$y'))) ||
-        (data.startsWith('\x1b[>') && data.endsWith('c')) ||
-        (data.startsWith('\x1b]') && (data.includes('rgb:') || data.includes('rgb;'))) ||
-        /^\x1b\[[0-9]+;[0-9]+R$/.test(data)
-      ) {
-        return;
-      }
+      if (!current()) return;
+      if (replaying) return;
 
       if (ws.readyState === WebSocket.OPEN) {
+        if (session.tabId === activeTabId && ctrlButton.getAttribute('aria-pressed') === 'true') { data = terminalControlCharacter(data); resetControlKey(); }
         ws.send(data);
       }
     });
 
     ws.onclose = () => {
+      if (!current()) return;
       updateSessionStatus(session, 'disconnected', '연결 종료');
       term.write('\r\n\x1b[33m[RemoteHub] Session closed.\x1b[0m\r\n');
     };
 
     ws.onerror = () => {
+      if (!current()) return;
       updateSessionStatus(session, 'disconnected', '연결 오류');
     };
 
@@ -642,6 +794,7 @@ async function startSshSession(session) {
     session.instance = { term, fitAddon, ws, sendResize };
 
   } catch (err) {
+    if (!current()) return;
     console.error('SSH start error:', err);
     updateSessionStatus(session, 'disconnected', '터미널 실패');
   }
@@ -649,11 +802,13 @@ async function startSshSession(session) {
 
 // 7. VNC 세션 구동
 async function startVncSession(session) {
+  const generation = session.generation;
+  const current = () => sessions.get(session.tabId) === session && session.generation === generation;
   const server = session.serverInfo;
   updateSessionStatus(session, 'connecting', `${server.name} 연결 중...`);
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws?serverId=${server.id}`;
+  const wsUrl = `${protocol}//${window.location.host}/ws?serverId=${encodeURIComponent(server.id)}`;
 
   const options = {
     credentials: {
@@ -668,10 +823,12 @@ async function startVncSession(session) {
     rfb.resizeSession = false;
 
     rfb.addEventListener('connect', () => {
+      if (!current()) return;
       updateSessionStatus(session, 'connected', `연결됨: ${server.name}`);
     });
 
     rfb.addEventListener('disconnect', (e) => {
+      if (!current()) return;
       if (e.detail.clean) {
         updateSessionStatus(session, 'disconnected', '연결 정상 종료');
       } else {
@@ -680,16 +837,19 @@ async function startVncSession(session) {
     });
 
     rfb.addEventListener('credentialsrequired', () => {
+      if (!current()) return;
       updateSessionStatus(session, 'connecting', '비밀번호 대기 중');
       openPasswordModal(session.tabId, 'VNC 비밀번호 필요', '이 VNC 서버 접속에 비밀번호가 필요합니다.');
     });
 
     rfb.addEventListener('securityfailure', () => {
+      if (!current()) return;
       updateSessionStatus(session, 'disconnected', '인증 실패');
       openPasswordModal(session.tabId, '비밀번호 오류', '비밀번호가 올바르지 않습니다. 다시 입력해 주세요.');
     });
 
     rfb.addEventListener('clipboard', (e) => {
+      if (!current()) return;
       const text = e.detail && e.detail.text;
       if (text) {
         session.lastClipboardText = text;
@@ -706,6 +866,7 @@ async function startVncSession(session) {
     session.instance = rfb;
 
   } catch (err) {
+    if (!current()) return;
     console.error('VNC init error:', err);
     updateSessionStatus(session, 'disconnected', '초기화 실패');
   }
@@ -713,16 +874,18 @@ async function startVncSession(session) {
 
 // 8. RDP 세션 구동
 async function startRdpSession(session) {
+  const generation = session.generation;
+  const current = () => sessions.get(session.tabId) === session && session.generation === generation;
   const server = session.serverInfo;
   updateSessionStatus(session, 'connecting', 'RDP 엔진 준비 중...');
 
   try {
     if (!rdpWasmModules) {
-      const wasm = await import('/ironrdp/pkg/rdp_client.js');
-      await wasm.default();
-      rdpWasmModules = wasm;
+      if (!rdpWasmPromise) rdpWasmPromise = import('/ironrdp/pkg/rdp_client.js').then(async wasm => { await wasm.default(); return wasm; }).catch(err => { rdpWasmPromise = null; throw err; });
+      rdpWasmModules = await rdpWasmPromise;
     }
 
+    if (!current()) return;
     const {
       SessionBuilder,
       DesktopSize,
@@ -735,8 +898,11 @@ async function startRdpSession(session) {
     updateSessionStatus(session, 'connecting', `${server.name} 접속 중...`);
 
     const canvas = document.createElement('canvas');
-    canvas.width = 1280;
-    canvas.height = 720;
+    const [desktopWidth, desktopHeight] = (session.rdpResolution || '1280x720').split('x').map(Number);
+    canvas.width = desktopWidth;
+    canvas.height = desktopHeight;
+    canvas.classList.add('rdp-canvas');
+    canvas.dataset.touchMode = session.rdpPan ? 'pan' : 'remote';
     canvas.tabIndex = 0;
     canvas.style.outline = 'none';
     canvas.style.display = 'block';
@@ -745,16 +911,17 @@ async function startRdpSession(session) {
     canvas.focus();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const proxyAddress = `${protocol}//${window.location.host}/ws?serverId=${server.id}`;
+    const proxyAddress = `${protocol}//${window.location.host}/ws?serverId=${encodeURIComponent(server.id)}`;
     const destination = `${server.host}:${server.port || 3389}`;
 
     const builder = new SessionBuilder();
     builder.username(server.username || 'Administrator');
     builder.password(server.password || '');
+    builder.serverDomain(server.domain || '');
     builder.destination(destination);
     builder.proxyAddress(proxyAddress);
     builder.authToken('none');
-    builder.desktopSize(new DesktopSize(1280, 720));
+    builder.desktopSize(new DesktopSize(desktopWidth, desktopHeight));
     builder.renderCanvas(canvas);
 
     builder.extension(new Extension('enable_credssp', true));
@@ -768,17 +935,21 @@ async function startRdpSession(session) {
     session.cleanupHandlers.push(cleanupInput);
 
     const rdpSession = await builder.connect();
+    if (!current()) { rdpSession.shutdown?.(); rdpSession.free(); return; }
     session.instance = rdpSession;
     updateSessionStatus(session, 'connected', `연결됨: ${server.name}`);
 
     rdpSession.run().then(() => {
+      if (!current()) return;
       updateSessionStatus(session, 'disconnected', '연결 종료');
     }).catch(err => {
+      if (!current()) return;
       console.error('RDP session error:', err);
       updateSessionStatus(session, 'disconnected', '세션 오류');
     });
 
   } catch (err) {
+    if (!current()) return;
     console.error('RDP error:', err);
     updateSessionStatus(session, 'disconnected', 'RDP 연결 실패');
   }
@@ -786,9 +957,10 @@ async function startRdpSession(session) {
 
 function applyCanvasScale(canvas, enabled) {
   if (!canvas) return;
+  if (canvas.parentElement) { canvas.parentElement.style.alignItems = enabled ? 'center' : 'flex-start'; canvas.parentElement.style.justifyContent = enabled ? 'center' : 'flex-start'; }
   if (enabled) {
     canvas.style.maxWidth = '100%';
-    canvas.style.maxHeight = 'calc(100vh - 44px)';
+    canvas.style.maxHeight = '100%';
     canvas.style.objectFit = 'contain';
     canvas.style.margin = 'auto';
   } else {
@@ -814,7 +986,13 @@ function closePasswordModal() {
   pendingPasswordTabId = null;
 }
 
-btnCancelPw.addEventListener('click', closePasswordModal);
+function cancelPasswordInput() {
+  const session = sessions.get(pendingPasswordTabId);
+  closePasswordModal();
+  if (session) { destroySession(session); updateSessionStatus(session, 'disconnected', '인증 입력 취소'); }
+}
+btnCancelPw.addEventListener('click', cancelPasswordInput);
+document.getElementById('btn-cancel-password').addEventListener('click', cancelPasswordInput);
 
 formPassword.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -829,8 +1007,9 @@ formPassword.addEventListener('submit', (e) => {
     if (session.serverInfo) {
       session.serverInfo.password = pw;
     }
-    updateSessionStatus(session, 'connecting', '비밀번호 전송 중...');
-    session.instance.sendCredentials({ password: pw });
+    if (session.status === 'disconnected') {
+      destroySession(session); session.viewEl.innerHTML = ''; startVncSession(session);
+    } else { updateSessionStatus(session, 'connecting', '비밀번호 전송 중...'); session.instance.sendCredentials({ password: pw }); }
   } else if (session.engine === 'rdp') {
     session.serverInfo.password = pw;
     destroySession(session);
@@ -872,11 +1051,10 @@ btnScale.addEventListener('click', () => {
 
 btnFullscreen.addEventListener('click', () => {
   if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen().catch(err => {
-      console.warn('Fullscreen error:', err);
-    });
+    if (!document.documentElement.requestFullscreen) { showNotice('이 브라우저에서는 전체화면을 지원하지 않습니다.'); return; }
+    document.documentElement.requestFullscreen().catch(() => showNotice('전체화면을 열지 못했습니다.'));
   } else {
-    document.exitFullscreen();
+    document.exitFullscreen?.();
   }
 });
 
@@ -895,6 +1073,8 @@ function openClipboardModal() {
       }
     }).catch(() => {});
   }
+  if (btnClipboardCopyRemote) btnClipboardCopyRemote.hidden = activeSession?.engine !== 'vnc';
+  document.querySelector('.clipboard-secondary').open = false;
   modalClipboard.classList.add('active');
   if (clipboardTextarea) {
     setTimeout(() => clipboardTextarea.focus(), 50);
@@ -1082,6 +1262,9 @@ if (btnClipboardTypeRemote) {
       // 화면에 직접 키스트로크 타이핑 전송!
       await sendKeystrokesToVnc(activeSession.instance, text);
       showClipboardToast(`⌨️ 화면 타이핑 입력 완료 (${text.length}자)`);
+    } else if (activeSession.engine === 'rdp' && activeSession.instance && rdpWasmModules) {
+      try { sendRdpText(activeSession.instance, text, rdpWasmModules); showClipboardToast(`원격 화면에 텍스트를 입력했습니다 (${text.length}자)`); }
+      catch (err) { showNotice('텍스트 입력 실패: ' + err.message); }
     } else if (activeSession.engine === 'ssh' && activeSession.instance && activeSession.instance.ws) {
       if (activeSession.instance.ws.readyState === WebSocket.OPEN) {
         activeSession.instance.ws.send(text);
@@ -1113,26 +1296,30 @@ window.addEventListener('paste', (e) => {
 
 async function reconnectSession(tabId, forceNew = false) {
   const session = sessions.get(tabId);
-  if (!session) return;
-
-  // 최신 접속 정보(비밀번호, 호스트 등) 동기화
+  if (!session || session.reconnecting) return;
+  session.reconnecting = true;
+  btnReconnect.disabled = true;
   try {
-    const res = await fetch(`/api/servers/${session.serverId}/connection`);
-    if (res.ok) {
-      session.serverInfo = await res.json();
-    }
-  } catch (_) {}
-
-  session.forceNew = forceNew;
-  destroySession(session);
-  session.viewEl.innerHTML = '';
-
-  if (session.engine === 'ssh') {
-    await startSshSession(session);
-  } else if (session.engine === 'rdp') {
-    await startRdpSession(session);
-  } else {
-    await startVncSession(session);
+    const response = await apiFetch(`/api/servers/${encodeURIComponent(session.serverId)}/connection`);
+    const info = await response.json();
+    if (!response.ok) throw new Error(info.error || '접속 정보를 확인하지 못했습니다.');
+    if (sessions.get(tabId) !== session) return;
+    destroySession(session);
+    session.serverInfo = info;
+    session.engine = info.protocol || 'vnc';
+    session.tabEl.querySelector('.tab-title-text').textContent = info.name;
+    session.tabEl.firstElementChild.textContent = session.engine === 'ssh' ? '💻' : session.engine === 'rdp' ? '🪟' : '🖥️';
+    session.viewEl.removeAttribute('style');
+    session.viewEl.classList.toggle('ssh-view', session.engine === 'ssh');
+    session.viewEl.innerHTML = '';
+    session.forceNew = forceNew;
+    if (session.engine === 'ssh') await startSshSession(session);
+    else if (session.engine === 'rdp') await startRdpSession(session);
+    else await startVncSession(session);
+  } catch (err) { showNotice('재연결 실패: ' + err.message); }
+  finally {
+    session.reconnecting = false;
+    updateToolbarForSession(getActiveSession());
   }
 }
 
@@ -1176,6 +1363,13 @@ if (btnFontInc) {
   btnFontInc.addEventListener('click', () => setTerminalFontSize(terminalFontSize + 1));
 }
 
+sessionMenuButton.addEventListener('click', () => {
+  if (!activeTabId) return;
+  const rect = sessionMenuButton.getBoundingClientRect();
+  showTabContextMenu(rect.left, rect.bottom, activeTabId);
+  tabContextMenuEl.querySelector('button')?.focus();
+});
+
 // 12. 탭 우클릭 컨텍스트 메뉴 (창 복제 / 재연결 / 닫기)
 function showTabContextMenu(x, y, tabId) {
   if (!tabContextMenuEl) return;
@@ -1183,10 +1377,10 @@ function showTabContextMenu(x, y, tabId) {
   tabContextMenuEl.style.display = 'block';
 
   // 창 경계 초과 방지
-  const menuWidth = 220;
-  const menuHeight = 200;
-  const posX = (x + menuWidth > window.innerWidth) ? (window.innerWidth - menuWidth - 10) : x;
-  const posY = (y + menuHeight > window.innerHeight) ? (window.innerHeight - menuHeight - 10) : y;
+  const menuWidth = tabContextMenuEl.offsetWidth;
+  const menuHeight = tabContextMenuEl.offsetHeight;
+  const posX = (x + menuWidth > window.innerWidth) ? Math.max(10, window.innerWidth - menuWidth - 10) : x;
+  const posY = (y + menuHeight > window.innerHeight) ? Math.max(10, window.innerHeight - menuHeight - 10) : y;
 
   tabContextMenuEl.style.left = `${posX}px`;
   tabContextMenuEl.style.top = `${posY}px`;
@@ -1194,13 +1388,15 @@ function showTabContextMenu(x, y, tabId) {
 
 function hideTabContextMenu() {
   if (tabContextMenuEl) {
+    const hadFocus = tabContextMenuEl.contains(document.activeElement);
     tabContextMenuEl.style.display = 'none';
+    if (hadFocus) document.querySelector('#viewer-tools > summary')?.focus();
   }
   contextMenuTargetTabId = null;
 }
 
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('#tab-context-menu')) {
+  if (!e.target.closest('#tab-context-menu, #btn-session-menu')) {
     hideTabContextMenu();
   }
 });
@@ -1287,7 +1483,7 @@ function escapeHtml(text) {
 async function initViewer() {
   // 사이드바 상태 복원
   const savedSidebar = localStorage.getItem('remotehub_sidebar_open');
-  if (savedSidebar === '0') {
+  if (compactViewport.matches || savedSidebar === '0') {
     setSidebarOpen(false);
   } else {
     setSidebarOpen(true);

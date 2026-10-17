@@ -4,9 +4,12 @@ const express = require('express');
 const session = require('express-session');
 const MemoryStore = require('memorystore')(session);
 const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
+const fs = require('fs');
 const { WebSocketServer } = require('ws');
 
 const configManager = require('./config');
+const { trackConnection } = require('./connections');
 const apiRoutes = require('./routes/api');
 const { handleWsConnection } = require('./routes/proxy');
 const { handleRdpConnection } = require('./routes/rdp-proxy');
@@ -15,17 +18,30 @@ const { handleSshConnection } = require('./routes/ssh-proxy');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Keep the generated secret outside source control and stable across restarts.
+function sessionSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  const secretPath = path.join(path.dirname(configManager.getConfigPath()), '.session-secret');
+  fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+  try { fs.writeFileSync(secretPath, crypto.randomBytes(48).toString('hex'), { flag: 'wx', mode: 0o600 }); }
+  catch (err) { if (err.code !== 'EEXIST') throw err; }
+  return fs.readFileSync(secretPath, 'utf8').trim();
+}
+configManager.readConfig();
+if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY);
+
 // 세션 미들웨어 설정 (memorystore: 메모리 누수 방지 및 만료 세션 자동 정리)
 const sessionParser = session({
   store: new MemoryStore({
     checkPeriod: 24 * 60 * 60 * 1000 // 24시간마다 만료 세션 정리
   }),
-  secret: process.env.SESSION_SECRET || 'remotehub-secret-key-salt',
+  secret: sessionSecret(),
   resave: false,
   saveUninitialized: false,
   cookie: {
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7일 유지
     httpOnly: true,
+    sameSite: 'lax',
     secure: 'auto'
   }
 });
@@ -56,6 +72,10 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // 5. API 라우트 등록
 app.use('/api', apiRoutes);
+app.use((err, req, res, next) => {
+  console.error('[HTTP]', err.message);
+  res.status(err.status || 500).json({ error: err.status ? err.message : 'Internal server error' });
+});
 
 // HTTP 서버 생성
 const server = http.createServer(app);
@@ -101,7 +121,9 @@ wss.on('connection', (ws, request) => {
 
 // HTTP Upgrade 이벤트 가로채기 (WebSocket 핸드셰이크)
 server.on('upgrade', (request, socket, head) => {
-  const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
+  let pathname;
+  try { pathname = new URL(request.url, 'http://localhost').pathname; }
+  catch (_) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return; }
 
   if (pathname !== '/ws') {
     socket.destroy();
@@ -109,20 +131,28 @@ server.on('upgrade', (request, socket, head) => {
   }
 
   // 세션 파싱 후 인증 여부 확인
-  sessionParser(request, {}, () => {
-    const config = configManager.readConfig();
-    if (config.auth.enabled) {
-      if (!request.session || !request.session.authenticated) {
-        console.warn('[Proxy] WebSocket rejected: unauthenticated session');
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
+  sessionParser(request, {}, (err) => {
+    try {
+      if (err) throw err;
+      const config = configManager.readConfig();
+      if (config.auth.enabled) {
+        if (!request.session || !request.session.authenticated || request.session.authVersion !== config.auth.passwordHash) {
+          console.warn('[Proxy] WebSocket rejected: unauthenticated session');
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
       }
-    }
 
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        trackConnection(request.sessionID, ws);
+        try { wss.emit('connection', ws, request); }
+        catch (err) { console.error('[Proxy]', err.message); ws.close(1011, 'Connection failed'); }
+      });
+    } catch (err) {
+      console.error('[Proxy]', err.message);
+      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+    }
   });
 });
 
@@ -130,7 +160,7 @@ server.on('upgrade', (request, socket, head) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`=========================================`);
   console.log(`  RemoteHub Server is running!`);
-  console.log(`  Listening on: http://0.0.0.0:${PORT}`);
+  console.log(`  Listening on: http://0.0.0.0:${server.address().port}`);
   console.log(`  Config Path:  ${configManager.getConfigPath()}`);
   console.log(`=========================================`);
 });
