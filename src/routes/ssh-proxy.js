@@ -319,6 +319,7 @@ function handleSshConnection(ws, req, server) {
   const parsedUrl = new URL(req.url, 'http://localhost');
   let sessionKey = parsedUrl.searchParams.get('sessionKey');
   const forceNew = parsedUrl.searchParams.get('forceNew') === '1' || parsedUrl.searchParams.get('forceNew') === 'true';
+  const isReconnect = parsedUrl.searchParams.get('reconnect') === '1' || parsedUrl.searchParams.get('reconnect') === 'true';
 
   if (!sessionKey) {
     if (!forceNew) {
@@ -338,17 +339,28 @@ function handleSshConnection(ws, req, server) {
   const existingSession = activeSshSessions.get(sessionKey);
 
   if (existingSession && !existingSession.isDestroyed) {
-    const streamClosed = existingSession.sshStream && existingSession.sshStream.destroyed;
+    const streamClosed = Boolean(
+      (existingSession.sshStream && existingSession.sshStream.destroyed) ||
+      (existingSession.sshClient && existingSession.sshClient._sock && existingSession.sshClient._sock.destroyed)
+    );
     if (existingSession.server.id !== server.id) {
       ws.close(1008, 'Session does not belong to this server');
       return;
     }
     if (forceNew || streamClosed) {
-      console.log(`[SSH:${server.name}] Existing session ${sessionKey} is ${forceNew ? 'force-renewed' : 'not viable'}. Re-creating.`);
+      console.log(`[SSH:${server.name}][${sessionKey}] Existing session is ${forceNew ? 'force-renewed' : 'not viable (stream closed)'}. Re-creating.`);
       existingSession.destroy();
+      if (streamClosed && ws.readyState === 1) {
+        try { ws.send('\r\n\x1b[33m[RemoteHub] 이전 원격 셸 프로세스가 종료되어 새 세션을 시작합니다.\x1b[0m\r\n'); } catch (_) {}
+      }
     } else {
       existingSession.attach(ws);
       return;
+    }
+  } else if (isReconnect) {
+    console.log(`[SSH:${server.name}][${sessionKey}] Reconnect requested, but previous session does not exist in pool (remote shell exited or server restarted). Creating fresh session.`);
+    if (ws.readyState === 1) {
+      try { ws.send('\r\n\x1b[33m[RemoteHub] 이전 원격 세션이 유지되지 않아(원격 프로세스 종료 또는 서버 재시작) 새 세션을 시작합니다.\x1b[0m\r\n'); } catch (_) {}
     }
   }
 

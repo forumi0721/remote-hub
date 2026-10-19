@@ -31,6 +31,7 @@ const sshFontControlsEl = document.getElementById('ssh-font-controls');
 const btnFontDec = document.getElementById('btn-font-dec');
 const btnFontInc = document.getElementById('btn-font-inc');
 const fontSizeDisplay = document.getElementById('font-size-display');
+const btnCopyOnSelect = document.getElementById('btn-copy-on-select');
 
 const tabContextMenuEl = document.getElementById('tab-context-menu');
 const ctxDuplicate = document.getElementById('ctx-duplicate');
@@ -41,7 +42,25 @@ const ctxTerminate = document.getElementById('ctx-terminate');
 const ctxCloseOthers = document.getElementById('ctx-close-others');
 
 let terminalFontSize = parseInt(localStorage.getItem('remotehub_terminal_font_size'), 10) || 14;
+let copyOnSelectEnabled = localStorage.getItem('remotehub_copy_on_select') === 'true';
 let contextMenuTargetTabId = null;
+
+function updateCopyOnSelectButton() {
+  if (!btnCopyOnSelect) return;
+  btnCopyOnSelect.textContent = copyOnSelectEnabled ? '선택 자동 복사: ON' : '선택 자동 복사: OFF';
+  btnCopyOnSelect.classList.toggle('active', copyOnSelectEnabled);
+  btnCopyOnSelect.setAttribute('aria-pressed', String(copyOnSelectEnabled));
+}
+
+if (btnCopyOnSelect) {
+  btnCopyOnSelect.addEventListener('click', () => {
+    copyOnSelectEnabled = !copyOnSelectEnabled;
+    localStorage.setItem('remotehub_copy_on_select', String(copyOnSelectEnabled));
+    updateCopyOnSelectButton();
+    showClipboardToast(copyOnSelectEnabled ? '선택 시 자동 복사 켜짐' : '선택 시 자동 복사 꺼짐');
+  });
+  updateCopyOnSelectButton();
+}
 
 const modalPassword = document.getElementById('modal-password');
 const formPassword = document.getElementById('form-password');
@@ -566,6 +585,7 @@ function updateToolbarForSession(session) {
     btnScale.style.display = 'none';
     if (btnClipboard) btnClipboard.style.display = 'none';
     if (sshFontControlsEl) sshFontControlsEl.style.display = 'none';
+    if (btnCopyOnSelect) btnCopyOnSelect.style.display = 'none';
     return;
   }
 
@@ -584,8 +604,13 @@ function updateToolbarForSession(session) {
       sshFontControlsEl.style.display = 'inline-flex';
       updateFontSizeDisplay();
     }
+    if (btnCopyOnSelect) {
+      btnCopyOnSelect.style.display = 'inline-flex';
+      updateCopyOnSelectButton();
+    }
   } else {
     if (sshFontControlsEl) sshFontControlsEl.style.display = 'none';
+    if (btnCopyOnSelect) btnCopyOnSelect.style.display = 'none';
     btnCad.style.display = 'inline-flex';
     btnScale.style.display = 'inline-flex';
     btnScale.textContent = session.scaleEnabled ? '📐 창 맞춤: ON' : '📐 창 맞춤: OFF';
@@ -821,11 +846,30 @@ async function startSshSession(session) {
 
     term.focus();
 
+    // 마우스 선택 시 옵션 활성화 상태면 자동 복사
+    const handleMouseUp = () => {
+      if (!copyOnSelectEnabled || !current()) return;
+      const selected = term.getSelection();
+      if (selected && selected.length > 0) {
+        if (copyTextToClipboard(selected)) {
+          showClipboardToast('선택 텍스트 복사됨');
+        }
+      }
+    };
+    session.viewEl.addEventListener('mouseup', handleMouseUp);
+    session.cleanupHandlers.push(() => {
+      session.viewEl.removeEventListener('mouseup', handleMouseUp);
+    });
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const sessionKeyParam = encodeURIComponent(session.sessionKey || `server_${server.id}`);
+    const sessionKeyParam = encodeURIComponent(session.sessionKey || `session_${server.id}`);
     const forceNewParam = session.forceNew ? '&forceNew=true' : '';
-    const wsUrl = `${protocol}//${window.location.host}/ws?serverId=${encodeURIComponent(server.id)}&sessionKey=${sessionKeyParam}${forceNewParam}`;
+    const isReconnectParam = session.isReconnect ? '&reconnect=true' : '';
+    const wsUrl = `${protocol}//${window.location.host}/ws?serverId=${encodeURIComponent(server.id)}&sessionKey=${sessionKeyParam}${forceNewParam}${isReconnectParam}`;
     session.forceNew = false;
+    session.isReconnect = false;
+    session.shellExited = false;
+    session.userClosed = false;
 
     updateSessionStatus(session, 'connecting', `${server.name} 접속 중...`);
 
@@ -1524,6 +1568,7 @@ async function reconnectSession(tabId, forceNew = false) {
     session.viewEl.classList.toggle('ssh-view', session.engine === 'ssh');
     session.viewEl.innerHTML = '';
     session.forceNew = forceNew;
+    session.isReconnect = !forceNew;
     if (session.engine === 'ssh') await startSshSession(session);
     else if (session.engine === 'rdp') await startRdpSession(session);
     else await startVncSession(session);
