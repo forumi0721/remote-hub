@@ -92,7 +92,30 @@ const wss = new WebSocketServer({
   }
 });
 
+// WebSocket Heartbeat / Ping-Pong (프록시 60초 타임아웃 및 브라우저 백그라운드 절전 차단: 20초 주기)
+const WS_HEARTBEAT_INTERVAL_MS = 20000;
+const heartbeatTimer = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch (_) {}
+  });
+}, WS_HEARTBEAT_INTERVAL_MS);
+heartbeatTimer.unref();
+
 wss.on('connection', (ws, request) => {
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+  ws.on('message', () => {
+    ws.isAlive = true;
+  });
+
   const parsedUrl = new URL(request.url, 'http://localhost');
   const serverId = parsedUrl.searchParams.get('serverId');
 

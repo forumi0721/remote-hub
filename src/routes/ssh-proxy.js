@@ -127,6 +127,7 @@ class PersistentSshSession {
         stream.on('close', () => {
           console.log(`${this.logPrefix} SSH shell stream closed (process exited)`);
           if (this.attachedWs && this.attachedWs.readyState === 1) {
+            try { this.attachedWs.send(JSON.stringify({ type: 'exit' })); } catch (_) {}
             this.attachedWs.send('\r\n\x1b[33m[RemoteHub] SSH session closed.\x1b[0m\r\n');
             this.attachedWs.close(1000, 'SSH Session Closed');
           }
@@ -233,6 +234,11 @@ class PersistentSshSession {
                 try {
                   this.sshStream.setWindow(this.lastRows, this.lastCols, 0, 0);
                 } catch (_) {}
+              }
+              return;
+            } else if (parsed.type === 'ping') {
+              if (ws.readyState === 1) {
+                try { ws.send(JSON.stringify({ type: 'pong' })); } catch (_) {}
               }
               return;
             } else if (parsed.type === 'terminate') {

@@ -586,6 +586,7 @@ function getStatusMessage(status) {
 function closeTab(tabId, terminateBackend = true) {
   const session = sessions.get(tabId);
   if (!session) return;
+  session.userClosed = true;
 
   if (terminateBackend && session.engine === 'ssh') {
     // 1) WebSocket으로 세션 즉시 완전 종료 요청
@@ -626,8 +627,29 @@ function closeTab(tabId, terminateBackend = true) {
   }
 }
 
+function scheduleAutoReconnect(session) {
+  if (!session || session.userClosed || session.shellExited) return;
+  if (session.reconnectTimer) clearTimeout(session.reconnectTimer);
+
+  session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
+  const delay = Math.min(1000 * Math.pow(1.4, session.reconnectAttempts - 1), 5000);
+
+  session.reconnectTimer = setTimeout(async () => {
+    session.reconnectTimer = null;
+    if (session.userClosed || session.shellExited) return;
+    if (sessions.get(session.tabId) !== session) return;
+
+    console.log(`[SSH:${session.serverInfo?.name}] Auto-reconnecting attempt #${session.reconnectAttempts}...`);
+    await reconnectSession(session.tabId, false);
+  }, delay);
+}
+
 function destroySession(session) {
   session.generation++;
+  if (session.reconnectTimer) {
+    clearTimeout(session.reconnectTimer);
+    session.reconnectTimer = null;
+  }
   if (pendingPasswordTabId === session.tabId) closePasswordModal();
   session.cleanupHandlers.forEach(fn => {
     try { fn(); } catch (_) {}
@@ -730,8 +752,21 @@ async function startSshSession(session) {
       }
     };
 
+    // 20초마다 클라이언트 Heartbeat Ping 전송 (브라우저 백그라운드 절전 및 프록시 타임아웃 차단)
+    const pingTimer = setInterval(() => {
+      if (!current()) {
+        clearInterval(pingTimer);
+        return;
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'ping' })); } catch (_) {}
+      }
+    }, 20000);
+    session.cleanupHandlers.push(() => clearInterval(pingTimer));
+
     ws.onopen = () => {
       if (!current()) { ws.close(); return; }
+      session.reconnectAttempts = 0;
       updateSessionStatus(session, 'connecting', 'SSH 인증 중…');
       fitAddon.fit();
       sendResize();
@@ -741,7 +776,16 @@ async function startSshSession(session) {
     let firstDataReceived = false;
     ws.onmessage = (event) => {
       if (!current()) return;
-      if (event.data === JSON.stringify({ type: 'ready' })) { updateSessionStatus(session, 'connected', `연결됨: ${server.name}`); return; }
+      if (event.data === JSON.stringify({ type: 'pong' })) return;
+      if (event.data === JSON.stringify({ type: 'exit' })) {
+        session.shellExited = true;
+        return;
+      }
+      if (event.data === JSON.stringify({ type: 'ready' })) {
+        session.reconnectAttempts = 0;
+        updateSessionStatus(session, 'connected', `연결됨: ${server.name}`);
+        return;
+      }
       if (event.data === JSON.stringify({ type: 'replay-start' })) { replaying = true; return; }
       if (event.data === JSON.stringify({ type: 'replay-end' })) {
         term.write('', () => { replaying = false; });
@@ -755,6 +799,9 @@ async function startSshSession(session) {
       }
 
       if (typeof event.data === 'string') {
+        if (event.data.includes('[RemoteHub] SSH session closed.')) {
+          session.shellExited = true;
+        }
         term.write(event.data);
       } else if (event.data instanceof ArrayBuffer) {
         term.write(new Uint8Array(event.data));
@@ -771,15 +818,30 @@ async function startSshSession(session) {
       }
     });
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (!current()) return;
-      updateSessionStatus(session, 'disconnected', '연결 종료');
-      term.write('\r\n\x1b[33m[RemoteHub] Session closed.\x1b[0m\r\n');
+      clearInterval(pingTimer);
+
+      // 1) 사용자가 탭을 닫았거나, 원격 셸이 명시적으로 종료(exit/logout 등)된 경우
+      if (session.userClosed || session.shellExited || (event && event.code === 1000)) {
+        updateSessionStatus(session, 'disconnected', '연결 종료');
+        term.write('\r\n\x1b[33m[RemoteHub] Session closed.\x1b[0m\r\n');
+        return;
+      }
+
+      // 2) 비정상 연결 끊김 (백그라운드 탭 절전, 네트워크 변경, 프록시 타임아웃 등)
+      console.warn(`[SSH:${server.name}] WebSocket dropped unexpectedly (code=${event?.code}). Auto-reconnecting...`);
+      updateSessionStatus(session, 'connecting', '네트워크 일시 단절 (세션 복원 중...)');
+      term.write('\r\n\x1b[33m[RemoteHub] 네트워크 연결이 일시적으로 끊어졌습니다. 세션 복원 중...\x1b[0m\r\n');
+
+      scheduleAutoReconnect(session);
     };
 
     ws.onerror = () => {
       if (!current()) return;
-      updateSessionStatus(session, 'disconnected', '연결 오류');
+      if (session.userClosed || session.shellExited) {
+        updateSessionStatus(session, 'disconnected', '연결 오류');
+      }
     };
 
     const resizeObserver = new ResizeObserver(() => {
@@ -1557,5 +1619,30 @@ async function initViewer() {
     updateToolbarForSession(null);
   }
 }
+
+// 브라우저 백그라운드 절전 복귀 시 단절된 세션 자동 즉시 복원
+function checkAndRestoreDroppedSessions() {
+  for (const session of sessions.values()) {
+    if (session.userClosed || session.shellExited) continue;
+    if (session.engine === 'ssh') {
+      const ws = session.instance?.ws;
+      if (!ws || ws.readyState >= WebSocket.CLOSING) {
+        console.log(`[RemoteHub] Tab active: restoring dropped SSH session (${session.serverInfo?.name})`);
+        reconnectSession(session.tabId, false);
+      }
+    } else if (session.status === 'disconnected') {
+      console.log(`[RemoteHub] Tab active: restoring dropped session (${session.serverInfo?.name})`);
+      reconnectSession(session.tabId, false);
+    }
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    checkAndRestoreDroppedSessions();
+  }
+});
+
+window.addEventListener('focus', checkAndRestoreDroppedSessions);
 
 initViewer();
