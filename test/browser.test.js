@@ -178,7 +178,7 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   await send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 2, key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67 });
   await new Promise(r => setTimeout(r, 100));
   assert.equal(receivedInput.length, inputLenBeforeSelection, 'Ctrl+C with selection does NOT send SIGINT');
-  assert.equal(await evaluate("getActiveSession().instance.term.hasSelection()"), false, 'Selection is cleared after Ctrl+C copy');
+  assert.equal(await evaluate("getActiveSession().instance.term.hasSelection()"), true, 'Selection is preserved after Ctrl+C copy');
   assert.ok(await evaluate("document.getElementById('clipboard-toast').textContent.includes('복사되었습니다')"));
 
   // 3. Ctrl+Shift+C prevents default (blocking DevTools)

@@ -773,7 +773,6 @@ async function startSshSession(session) {
           const selected = term.getSelection();
           if (selected && selected.length > 0) {
             copyTextToClipboard(selected);
-            term.clearSelection();
           } else {
             showClipboardToast('선택된 텍스트가 없습니다.');
           }
@@ -792,7 +791,7 @@ async function startSshSession(session) {
       }
 
       // 4. Ctrl + C: 스마트 복사
-      // - 텍스트 선택 영역이 있으면: 클립보드로 복사하고 선택 해제 (원격 셸 명령 취소 방지)
+      // - 텍스트 선택 영역이 있으면: 클립보드로 복사 (선택 영역 유지, 원격 셸 명령 취소 방지)
       // - 선택 영역이 없으면: xterm 기본 동작(\x03 SIGINT 전송, 실행 중인 명령 취소) 허용
       if (isCtrlOrMeta && !e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
         const selected = term.getSelection();
@@ -801,7 +800,6 @@ async function startSshSession(session) {
             e.preventDefault();
             e.stopPropagation();
             copyTextToClipboard(selected);
-            term.clearSelection();
           }
           return false;
         }
@@ -1485,26 +1483,24 @@ window.addEventListener('keydown', (e) => {
   const { term, ws } = activeSession.instance;
   if (!term) return;
 
-  // 1. Ctrl + C: 스마트 복사 (텍스트 선택 영역이 있으면 원격 셸 SIGINT 방지 및 즉시 복사)
+  // 1. Ctrl + C: 스마트 복사 (텍스트 선택 영역이 있으면 원격 셸 SIGINT 방지 및 즉시 복사, 선택 영역 유지)
   if (!e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
     const selected = term.getSelection();
     if (selected && selected.length > 0) {
       e.preventDefault();
       e.stopPropagation();
       copyTextToClipboard(selected);
-      term.clearSelection();
       return;
     }
   }
 
-  // 2. Ctrl + Shift + C: 브라우저 개발자 도구(요소 검사) 방지 및 선택영역 복사
+  // 2. Ctrl + Shift + C: 브라우저 개발자 도구(요소 검사) 방지 및 선택영역 복사 (선택 영역 유지)
   if (e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
     e.preventDefault();
     e.stopPropagation();
     const selected = term.getSelection();
     if (selected && selected.length > 0) {
       copyTextToClipboard(selected);
-      term.clearSelection();
     } else {
       showClipboardToast('선택된 텍스트가 없습니다.');
     }
