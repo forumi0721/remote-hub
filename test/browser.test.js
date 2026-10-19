@@ -158,6 +158,45 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   assert.ok(await evaluate("document.querySelector('#modal-clipboard .modal-body').clientHeight >= 80"));
   await evaluate("document.getElementById('btn-close-clipboard').click()");
 
+  // Verify SSH keyboard shortcuts (Ctrl+Shift+C, Ctrl+Shift+V, and smart Ctrl+C)
+  await evaluate("getActiveSession().instance.term.focus(); getActiveSession().instance.term.clearSelection()");
+  const inputLenBefore = receivedInput.length;
+  // 1. Without selection, Ctrl+C sends \x03 (SIGINT)
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 2, key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 2, key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67 });
+  const sigintDeadline = Date.now() + 2000;
+  while (!receivedInput.slice(inputLenBefore).join('').includes('\x03') && Date.now() < sigintDeadline) {
+    await new Promise(r => setTimeout(r, 20));
+  }
+  assert.ok(receivedInput.slice(inputLenBefore).join('').includes('\x03'), 'Ctrl+C without selection sends SIGINT');
+
+  // 2. With selection, Ctrl+C copies and clears selection without sending \x03
+  await evaluate("getActiveSession().instance.term.selectAll()");
+  assert.equal(await evaluate("getActiveSession().instance.term.hasSelection()"), true);
+  const inputLenBeforeSelection = receivedInput.length;
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 2, key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 2, key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67 });
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(receivedInput.length, inputLenBeforeSelection, 'Ctrl+C with selection does NOT send SIGINT');
+  assert.equal(await evaluate("getActiveSession().instance.term.hasSelection()"), false, 'Selection is cleared after Ctrl+C copy');
+  assert.ok(await evaluate("document.getElementById('clipboard-toast').textContent.includes('복사되었습니다')"));
+
+  // 3. Ctrl+Shift+C prevents default (blocking DevTools)
+  const shiftCPrevented = await evaluate(`(() => {
+    const event = new KeyboardEvent('keydown', { key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })()`);
+  assert.equal(shiftCPrevented, true, 'Ctrl+Shift+C must call preventDefault to suppress DevTools');
+
+  // 4. Ctrl+Shift+V prevents default
+  const shiftVPrevented = await evaluate(`(() => {
+    const event = new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })()`);
+  assert.equal(shiftVPrevented, true, 'Ctrl+Shift+V must call preventDefault');
+
   await evaluate("Object.defineProperty(window, 'visualViewport', {configurable: true, value: window.__nativeViewport}); dispatchEvent(new Event('resize'))");
   const before = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
   assert.equal(before.total, 1);

@@ -72,6 +72,60 @@ function showClipboardToast(message) {
   }, 2500);
 }
 
+async function copyTerminalSelection(term) {
+  if (!term) return false;
+  const selected = term.getSelection();
+  if (!selected) {
+    return false;
+  }
+  let success = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(selected);
+      success = true;
+    }
+  } catch (_) {}
+
+  if (!success) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = selected;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      success = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (_) {}
+  }
+
+  if (success) {
+    showClipboardToast('📋 선택한 텍스트가 클립보드에 복사되었습니다.');
+    return true;
+  }
+  return false;
+}
+
+async function pasteTerminalText(term, ws) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        if (term) term.paste(text);
+        else if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
+        showClipboardToast(`📋 클립보드에서 붙여넣었습니다 (${text.length}자)`);
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn('Clipboard read failed:', err);
+    showClipboardToast('⚠️ 클립보드 읽기 권한이 필요합니다 (또는 Ctrl+V 사용).');
+  }
+  return false;
+}
+
 const mobileInputBar = document.getElementById('mobile-input-bar');
 const terminalKeys = document.getElementById('terminal-keys');
 const ctrlButton = document.getElementById('btn-terminal-ctrl');
@@ -701,16 +755,55 @@ async function startSshSession(session) {
       lineHeight: 1.2
     });
 
-    // Ctrl + / - 글꼴 크기 단축키 지원
+    // 키보드 단축키 지원 (글꼴 크기 조절, Ctrl+Shift+C/V, 스마트 Ctrl+C)
     term.attachCustomKeyEventHandler((e) => {
-      if (e.ctrlKey && (e.key === '=' || e.key === '+')) {
-        setTerminalFontSize(terminalFontSize + 1);
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+
+      // 1. 글꼴 크기 단축키 지원 (Ctrl + / Ctrl -)
+      if (isCtrlOrMeta && (e.key === '=' || e.key === '+')) {
+        if (e.type === 'keydown') setTerminalFontSize(terminalFontSize + 1);
         return false;
       }
-      if (e.ctrlKey && (e.key === '-' || e.key === '_')) {
-        setTerminalFontSize(terminalFontSize - 1);
+      if (isCtrlOrMeta && (e.key === '-' || e.key === '_')) {
+        if (e.type === 'keydown') setTerminalFontSize(terminalFontSize - 1);
         return false;
       }
+
+      // 2. Ctrl + Shift + C: 터미널 선택 영역 복사 및 브라우저 DevTools 방지
+      if (isCtrlOrMeta && e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          e.stopPropagation();
+          copyTerminalSelection(term);
+        }
+        return false;
+      }
+
+      // 3. Ctrl + Shift + V: 클립보드 내용 터미널 붙여넣기
+      if (isCtrlOrMeta && e.shiftKey && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) {
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          e.stopPropagation();
+          pasteTerminalText(term, ws);
+        }
+        return false;
+      }
+
+      // 4. Ctrl + C: 스마트 복사
+      // - 텍스트 선택 영역이 있으면: 클립보드로 복사하고 선택 해제 (원격 셸 명령 취소 방지)
+      // - 선택 영역이 없으면: xterm 기본 동작(\x03 SIGINT 전송, 실행 중인 명령 취소) 허용
+      if (isCtrlOrMeta && !e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
+        if (term.hasSelection()) {
+          if (e.type === 'keydown') {
+            copyTerminalSelection(term).then((copied) => {
+              if (copied) term.clearSelection();
+            });
+          }
+          return false;
+        }
+        return true;
+      }
+
       return true;
     });
 
@@ -1084,6 +1177,7 @@ formPassword.addEventListener('submit', (e) => {
 function getActiveSession() {
   return activeTabId ? sessions.get(activeTabId) : null;
 }
+window.getActiveSession = getActiveSession;
 
 btnCad.addEventListener('click', () => {
   const session = getActiveSession();
@@ -1353,8 +1447,44 @@ window.addEventListener('paste', (e) => {
       }
       showClipboardToast(`📋 클립보드가 원격지로 전송되었습니다 (${text.length}자)`);
     }
+  } else if (activeSession && activeSession.engine === 'ssh' && activeSession.instance) {
+    const text = e.clipboardData ? e.clipboardData.getData('text') : '';
+    if (text && activeSession.instance.term) {
+      activeSession.instance.term.paste(text);
+      showClipboardToast(`📋 클립보드에서 붙여넣었습니다 (${text.length}자)`);
+    }
   }
 });
+
+// SSH 터미널 단축키 브라우저 가로채기 방지 (특히 Edge/Chrome에서 Ctrl+Shift+C 누를 때 개발자 도구 열리는 현상 방지)
+window.addEventListener('keydown', (e) => {
+  const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+  if (!isCtrlOrMeta) return;
+
+  // 모달창이 열려있거나 모달 내부 입력 중인 경우 가로채지 않음
+  if (document.querySelector('.modal-overlay.active')) return;
+
+  const activeSession = getActiveSession();
+  if (!activeSession || activeSession.engine !== 'ssh' || !activeSession.instance) return;
+  const { term, ws } = activeSession.instance;
+  if (!term) return;
+
+  // Ctrl + Shift + C: 브라우저 개발자 도구(요소 검사) 방지 및 선택영역 복사
+  if (e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
+    e.preventDefault();
+    e.stopPropagation();
+    copyTerminalSelection(term);
+    return;
+  }
+
+  // Ctrl + Shift + V: 브라우저 기본 동작 방지 및 클립보드 내용 터미널 붙여넣기
+  if (e.shiftKey && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) {
+    e.preventDefault();
+    e.stopPropagation();
+    pasteTerminalText(term, ws);
+    return;
+  }
+}, true);
 
 async function reconnectSession(tabId, forceNew = false) {
   const session = sessions.get(tabId);
