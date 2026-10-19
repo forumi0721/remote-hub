@@ -72,40 +72,36 @@ function showClipboardToast(message) {
   }, 2500);
 }
 
-async function copyTerminalSelection(term) {
-  if (!term) return false;
-  const selected = term.getSelection();
-  if (!selected) {
-    return false;
-  }
-  let success = false;
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(selected);
-      success = true;
+function copyTextToClipboard(text) {
+  if (!text) return false;
+  let succeeded = false;
+
+  // 1. execCommand with capture listener (HTTP 및 HTTPS 환경 모두에서 동기식 동작 보장)
+  const onCopy = (e) => {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    if (e.clipboardData) {
+      e.clipboardData.setData('text/plain', text);
+      succeeded = true;
     }
+  };
+  document.addEventListener('copy', onCopy, { capture: true, once: true });
+  try {
+    succeeded = document.execCommand('copy');
   } catch (_) {}
+  document.removeEventListener('copy', onCopy, { capture: true });
 
-  if (!success) {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = selected;
-      ta.style.position = 'fixed';
-      ta.style.left = '-9999px';
-      ta.style.top = '-9999px';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      success = document.execCommand('copy');
-      document.body.removeChild(ta);
-    } catch (_) {}
-  }
-
-  if (success) {
+  // 2. navigator.clipboard.writeText (보안 컨텍스트 백업)
+  if (!succeeded && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showClipboardToast('📋 선택한 텍스트가 클립보드에 복사되었습니다.');
+    }).catch(() => {});
+    return true;
+  } else if (succeeded) {
     showClipboardToast('📋 선택한 텍스트가 클립보드에 복사되었습니다.');
     return true;
   }
-  return false;
+  return succeeded;
 }
 
 async function pasteTerminalText(term, ws) {
@@ -774,7 +770,13 @@ async function startSshSession(session) {
         if (e.type === 'keydown') {
           e.preventDefault();
           e.stopPropagation();
-          copyTerminalSelection(term);
+          const selected = term.getSelection();
+          if (selected && selected.length > 0) {
+            copyTextToClipboard(selected);
+            term.clearSelection();
+          } else {
+            showClipboardToast('선택된 텍스트가 없습니다.');
+          }
         }
         return false;
       }
@@ -793,11 +795,13 @@ async function startSshSession(session) {
       // - 텍스트 선택 영역이 있으면: 클립보드로 복사하고 선택 해제 (원격 셸 명령 취소 방지)
       // - 선택 영역이 없으면: xterm 기본 동작(\x03 SIGINT 전송, 실행 중인 명령 취소) 허용
       if (isCtrlOrMeta && !e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
-        if (term.hasSelection()) {
+        const selected = term.getSelection();
+        if (selected && selected.length > 0) {
           if (e.type === 'keydown') {
-            copyTerminalSelection(term).then((copied) => {
-              if (copied) term.clearSelection();
-            });
+            e.preventDefault();
+            e.stopPropagation();
+            copyTextToClipboard(selected);
+            term.clearSelection();
           }
           return false;
         }
@@ -812,6 +816,17 @@ async function startSshSession(session) {
     term.open(session.viewEl);
     const terminalInput = session.viewEl.querySelector('textarea');
     if (terminalInput) { terminalInput.setAttribute('autocapitalize', 'off'); terminalInput.setAttribute('autocomplete', 'off'); terminalInput.spellcheck = false; }
+
+    // 마우스 드래그 선택 시 클립보드 자동 복사 (Copy on Select - PuTTY/MobaXterm 방식)
+    session.viewEl.addEventListener('mouseup', () => {
+      setTimeout(() => {
+        if (!current()) return;
+        const selected = term.getSelection();
+        if (selected && selected.trim().length > 0) {
+          copyTextToClipboard(selected);
+        }
+      }, 20);
+    });
 
     requestAnimationFrame(() => {
       if (current()) fitAddon.fit();
@@ -1457,6 +1472,7 @@ window.addEventListener('paste', (e) => {
 });
 
 // SSH 터미널 단축키 브라우저 가로채기 방지 (특히 Edge/Chrome에서 Ctrl+Shift+C 누를 때 개발자 도구 열리는 현상 방지)
+// SSH 터미널 단축키 브라우저 가로채기 방지 및 스마트 복사
 window.addEventListener('keydown', (e) => {
   const isCtrlOrMeta = e.ctrlKey || e.metaKey;
   if (!isCtrlOrMeta) return;
@@ -1469,15 +1485,33 @@ window.addEventListener('keydown', (e) => {
   const { term, ws } = activeSession.instance;
   if (!term) return;
 
-  // Ctrl + Shift + C: 브라우저 개발자 도구(요소 검사) 방지 및 선택영역 복사
+  // 1. Ctrl + C: 스마트 복사 (텍스트 선택 영역이 있으면 원격 셸 SIGINT 방지 및 즉시 복사)
+  if (!e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
+    const selected = term.getSelection();
+    if (selected && selected.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      copyTextToClipboard(selected);
+      term.clearSelection();
+      return;
+    }
+  }
+
+  // 2. Ctrl + Shift + C: 브라우저 개발자 도구(요소 검사) 방지 및 선택영역 복사
   if (e.shiftKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
     e.preventDefault();
     e.stopPropagation();
-    copyTerminalSelection(term);
+    const selected = term.getSelection();
+    if (selected && selected.length > 0) {
+      copyTextToClipboard(selected);
+      term.clearSelection();
+    } else {
+      showClipboardToast('선택된 텍스트가 없습니다.');
+    }
     return;
   }
 
-  // Ctrl + Shift + V: 브라우저 기본 동작 방지 및 클립보드 내용 터미널 붙여넣기
+  // 3. Ctrl + Shift + V: 브라우저 기본 동작 방지 및 클립보드 내용 터미널 붙여넣기
   if (e.shiftKey && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) {
     e.preventDefault();
     e.stopPropagation();
