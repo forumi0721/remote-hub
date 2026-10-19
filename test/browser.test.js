@@ -197,12 +197,6 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   })()`);
   assert.equal(shiftVPrevented, true, 'Ctrl+Shift+V must call preventDefault');
 
-  // 5. Mouse drag selection auto-copies (Copy on Select)
-  await evaluate("getActiveSession().instance.term.selectAll()");
-  await evaluate("getActiveSession().viewEl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))");
-  await new Promise(r => setTimeout(r, 100));
-  assert.ok(await evaluate("document.getElementById('clipboard-toast').textContent.includes('복사되었습니다')"));
-
   await evaluate("Object.defineProperty(window, 'visualViewport', {configurable: true, value: window.__nativeViewport}); dispatchEvent(new Event('resize'))");
   const before = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
   assert.equal(before.total, 1);

@@ -815,17 +815,6 @@ async function startSshSession(session) {
     const terminalInput = session.viewEl.querySelector('textarea');
     if (terminalInput) { terminalInput.setAttribute('autocapitalize', 'off'); terminalInput.setAttribute('autocomplete', 'off'); terminalInput.spellcheck = false; }
 
-    // 마우스 드래그 선택 시 클립보드 자동 복사 (Copy on Select - PuTTY/MobaXterm 방식)
-    session.viewEl.addEventListener('mouseup', () => {
-      setTimeout(() => {
-        if (!current()) return;
-        const selected = term.getSelection();
-        if (selected && selected.trim().length > 0) {
-          copyTextToClipboard(selected);
-        }
-      }, 20);
-    });
-
     requestAnimationFrame(() => {
       if (current()) fitAddon.fit();
     });
