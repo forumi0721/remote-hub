@@ -805,13 +805,8 @@ async function startSshSession(session) {
         return false;
       }
 
-      // 3. Ctrl + Shift + V: 클립보드 내용 터미널 붙여넣기
-      if (isCtrlOrMeta && e.shiftKey && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) {
-        if (e.type === 'keydown') {
-          e.preventDefault();
-          e.stopPropagation();
-          pasteTerminalText(term, ws);
-        }
+      // 3. Ctrl + V / Ctrl + Shift + V: xterm의 제어 문자 전송(\x16 등)을 막고 브라우저 native paste가 발생하도록 false 반환
+      if (isCtrlOrMeta && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) {
         return false;
       }
 
@@ -1434,8 +1429,13 @@ if (btnClipboardCopyRemote) {
       closeClipboardModal();
     } else if (activeSession.engine === 'ssh' && activeSession.instance && activeSession.instance.ws) {
       if (activeSession.instance.ws.readyState === WebSocket.OPEN) {
-        activeSession.instance.ws.send(text);
-        showClipboardToast(`📤 터미널로 텍스트가 전송되었습니다 (${text.length}자)`);
+        if (activeSession.instance.term) {
+          activeSession.instance.term.paste(text);
+          activeSession.instance.term.focus();
+        } else {
+          activeSession.instance.ws.send(text);
+        }
+        showClipboardToast(`📋 터미널에 붙여넣었습니다 (${text.length}자)`);
         closeClipboardModal();
       }
     }
@@ -1469,9 +1469,13 @@ if (btnClipboardTypeRemote) {
       catch (err) { showNotice('텍스트 입력 실패: ' + err.message); }
     } else if (activeSession.engine === 'ssh' && activeSession.instance && activeSession.instance.ws) {
       if (activeSession.instance.ws.readyState === WebSocket.OPEN) {
-        activeSession.instance.ws.send(text);
-        if (activeSession.instance.term) activeSession.instance.term.focus();
-        showClipboardToast(`⌨️ 터미널로 텍스트 입력 완료 (${text.length}자)`);
+        if (activeSession.instance.term) {
+          activeSession.instance.term.paste(text);
+          activeSession.instance.term.focus();
+        } else {
+          activeSession.instance.ws.send(text);
+        }
+        showClipboardToast(`📋 터미널에 붙여넣었습니다 (${text.length}자)`);
       }
     }
   });
@@ -1479,8 +1483,16 @@ if (btnClipboardTypeRemote) {
 
 // 뷰어 화면에서 Ctrl+V 붙여넣기 시 원격지로 자동 전송
 window.addEventListener('paste', (e) => {
-  // 모달 입력창이나 textarea, 일반 input에서 붙여넣는 중이라면 가로채지 않음
-  if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+  // 모달 입력창이나 sidebar-search-input, 일반 textarea, input, contenteditable에서 붙여넣는 중이라면 가로채지 않음
+  const isTerminalHelper = e.target && e.target.classList && e.target.classList.contains('xterm-helper-textarea');
+  if (e.target && !isTerminalHelper) {
+    if (['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable || (typeof e.target.closest === 'function' && e.target.closest('input, textarea, [contenteditable="true"]'))) {
+      return;
+    }
+  }
+
+  // xterm 터미널 helper textarea는 xterm 자체 handlePasteEvent에서 처리하므로 중복 붙여넣기 방지
+  if (isTerminalHelper) return;
 
   const activeSession = getActiveSession();
   if (activeSession && activeSession.engine === 'vnc' && activeSession.instance) {
@@ -1496,6 +1508,7 @@ window.addEventListener('paste', (e) => {
   } else if (activeSession && activeSession.engine === 'ssh' && activeSession.instance) {
     const text = e.clipboardData ? e.clipboardData.getData('text') : '';
     if (text && activeSession.instance.term) {
+      e.preventDefault();
       activeSession.instance.term.paste(text);
       showClipboardToast(`📋 클립보드에서 붙여넣었습니다 (${text.length}자)`);
     }
@@ -1510,6 +1523,14 @@ window.addEventListener('keydown', (e) => {
 
   // 모달창이 열려있거나 모달 내부 입력 중인 경우 가로채지 않음
   if (document.querySelector('.modal-overlay.active')) return;
+
+  // sidebar-search-input 및 일반 input, textarea, contenteditable 입력 중인 경우 가로채지 않음 (xterm 터미널 textarea 제외)
+  const isTerminalHelper = e.target && e.target.classList && e.target.classList.contains('xterm-helper-textarea');
+  if (e.target && !isTerminalHelper) {
+    if (['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable || (typeof e.target.closest === 'function' && e.target.closest('input, textarea, [contenteditable="true"]'))) {
+      return;
+    }
+  }
 
   const activeSession = getActiveSession();
   if (!activeSession || activeSession.engine !== 'ssh' || !activeSession.instance) return;
@@ -1540,11 +1561,11 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // 3. Ctrl + Shift + V: 브라우저 기본 동작 방지 및 클립보드 내용 터미널 붙여넣기
-  if (e.shiftKey && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) {
-    e.preventDefault();
-    e.stopPropagation();
-    pasteTerminalText(term, ws);
+  // 3. Ctrl + V / Ctrl + Shift + V: 브라우저 기본 native paste 허용 (터미널 외 비입력 영역이면 터미널로 포커스)
+  if (e.code === 'KeyV' || e.key === 'v' || e.key === 'V') {
+    if (!isTerminalHelper && term) {
+      term.focus();
+    }
     return;
   }
 }, true);

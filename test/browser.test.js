@@ -128,7 +128,7 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   const responseDeadline = Date.now() + 3000;
   while (!receivedResponses && Date.now() < responseDeadline) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(receivedResponses > 0, 'live terminal queries must receive xterm responses');
-  const responsesBeforeReload = receivedResponses;
+  let responsesBeforeReload = receivedResponses;
   // Mobile helper keys reach the same live SSH channel.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   await waitFor("document.getElementById('mobile-input-bar').getBoundingClientRect().height >= 44");
@@ -189,17 +189,127 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   })()`);
   assert.equal(shiftCPrevented, true, 'Ctrl+Shift+C must call preventDefault to suppress DevTools');
 
-  // 4. Ctrl+Shift+V prevents default
+  // 4. Ctrl+Shift+V does NOT prevent default (allowing native browser clipboard event)
   const shiftVPrevented = await evaluate(`(() => {
     const event = new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
     window.dispatchEvent(event);
     return event.defaultPrevented;
   })()`);
-  assert.equal(shiftVPrevented, true, 'Ctrl+Shift+V must call preventDefault');
+  assert.equal(shiftVPrevented, false, 'Ctrl+Shift+V must NOT call preventDefault to allow native paste');
+
+  // 5. Ctrl+V does NOT prevent default (allowing native browser clipboard event)
+  const ctrlVPrevented = await evaluate(`(() => {
+    const event = new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })()`);
+  assert.equal(ctrlVPrevented, false, 'Ctrl+V must NOT call preventDefault to preserve native paste');
+
+  const setClipboard = async text => {
+    await evaluate(`(() => {
+      const onCopy = e => { e.stopImmediatePropagation(); e.preventDefault(); e.clipboardData.setData('text/plain', ${JSON.stringify(text)}); };
+      document.addEventListener('copy', onCopy, { capture: true, once: true });
+      document.execCommand('copy');
+    })()`);
+  };
+
+  // 6. Ctrl+Shift+V multi-line paste via CDP native key dispatch with DECSET 2004 enabled and readText throwing
+  await evaluate("new Promise(resolve => getActiveSession().instance.term.write('\\x1b[?2004h', resolve))");
+  await evaluate("navigator.clipboard.readText = async () => { throw new Error('readText denied'); }");
+  await setClipboard('line1\nline2\n');
+  await evaluate("getActiveSession().instance.term.focus()");
+  const bracketedInputBefore = receivedInput.length;
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 10, key: 'V', code: 'KeyV', windowsVirtualKeyCode: 86 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 10, key: 'V', code: 'KeyV', windowsVirtualKeyCode: 86 });
+  const bracketedDeadline = Date.now() + 3000;
+  while (!receivedInput.slice(bracketedInputBefore).join('').includes('\x1b[200~') && Date.now() < bracketedDeadline) {
+    await new Promise(r => setTimeout(r, 20));
+  }
+  const bracketedReceived = receivedInput.slice(bracketedInputBefore).join('');
+  assert.ok(bracketedReceived.includes('\x1b[200~line1\rline2\r\x1b[201~'), 'Ctrl+Shift+V via native key dispatch sends multi-line text wrapped in bracketed paste markers without readText');
+  const bracketCount = (bracketedReceived.match(/\x1b\[200~/g) || []).length;
+  assert.equal(bracketCount, 1, 'Bracketed paste markers sent exactly once');
+
+  // 7. Bracketed paste disabled (DECSET 2004 disabled): delimiters must NOT be sent
+  await evaluate("new Promise(resolve => getActiveSession().instance.term.write('\\x1b[?2004l', resolve))");
+  await setClipboard('line3\nline4\n');
+  await evaluate("getActiveSession().instance.term.focus()");
+  const nonBracketedInputBefore = receivedInput.length;
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 10, key: 'V', code: 'KeyV', windowsVirtualKeyCode: 86 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 10, key: 'V', code: 'KeyV', windowsVirtualKeyCode: 86 });
+  const nonBracketedDeadline = Date.now() + 3000;
+  while (!receivedInput.slice(nonBracketedInputBefore).join('').includes('line3') && Date.now() < nonBracketedDeadline) {
+    await new Promise(r => setTimeout(r, 20));
+  }
+  const nonBracketedReceived = receivedInput.slice(nonBracketedInputBefore).join('');
+  assert.ok(nonBracketedReceived.includes('line3\rline4\r'), 'Paste sends normalized multi-line text');
+  assert.ok(!nonBracketedReceived.includes('\x1b[200~'), 'Bracketed paste markers NOT sent when remote disabled DECSET 2004');
+
+  // 8. Ctrl+V native paste via CDP native key dispatch works when clipboard.readText is rejected with NO duplicate transmission
+  await setClipboard('ctrl-v-native-data');
+  await evaluate("getActiveSession().instance.term.focus()");
+  const nativePasteBefore = receivedInput.length;
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 2, key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 2, key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86 });
+  const nativeDeadline = Date.now() + 3000;
+  while (!receivedInput.slice(nativePasteBefore).join('').includes('ctrl-v-native-data') && Date.now() < nativeDeadline) {
+    await new Promise(r => setTimeout(r, 20));
+  }
+  const nativeReceived = receivedInput.slice(nativePasteBefore).join('');
+  const nativeCount = (nativeReceived.match(/ctrl-v-native-data/g) || []).length;
+  assert.equal(nativeCount, 1, 'Ctrl+V native key dispatch transmitted exactly once without duplicates when readText is denied');
+
+  // 9. sidebar-search-input and general input/textarea/contenteditable do NOT send Ctrl+V / Ctrl+Shift+V to terminal
+  const searchTestResult = await evaluate(`(() => {
+    const searchInput = document.getElementById('sidebar-search-input');
+    searchInput.focus();
+    const ctrlV = new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true, cancelable: true });
+    searchInput.dispatchEvent(ctrlV);
+    const ctrlShiftV = new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    searchInput.dispatchEvent(ctrlShiftV);
+    const dt = new DataTransfer();
+    dt.setData('text/plain', 'search-box-content');
+    const pasteEv = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
+    searchInput.dispatchEvent(pasteEv);
+    return {
+      ctrlVPrevented: ctrlV.defaultPrevented,
+      ctrlShiftVPrevented: ctrlShiftV.defaultPrevented
+    };
+  })()`);
+  assert.equal(searchTestResult.ctrlVPrevented, false, 'sidebar-search-input Ctrl+V must not be prevented');
+  assert.equal(searchTestResult.ctrlShiftVPrevented, false, 'sidebar-search-input Ctrl+Shift+V must not be prevented');
+
+  const contentEditableResult = await evaluate(`(() => {
+    const ce = document.createElement('div');
+    ce.contentEditable = 'true';
+    document.body.appendChild(ce);
+    ce.focus();
+    const ctrlV = new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true, cancelable: true });
+    ce.dispatchEvent(ctrlV);
+    const ctrlShiftV = new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    ce.dispatchEvent(ctrlShiftV);
+    const dt = new DataTransfer();
+    dt.setData('text/plain', 'editable-content');
+    const pasteEv = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
+    ce.dispatchEvent(pasteEv);
+    document.body.removeChild(ce);
+    return {
+      ctrlVPrevented: ctrlV.defaultPrevented,
+      ctrlShiftVPrevented: ctrlShiftV.defaultPrevented
+    };
+  })()`);
+  assert.equal(contentEditableResult.ctrlVPrevented, false, 'contenteditable Ctrl+V must not be prevented');
+  assert.equal(contentEditableResult.ctrlShiftVPrevented, false, 'contenteditable Ctrl+Shift+V must not be prevented');
+
+  // Verify none of search/editable paste contents reached terminal
+  const allReceived = receivedInput.join('');
+  assert.ok(!allReceived.includes('search-box-content'), 'sidebar-search-input paste must not be sent to terminal');
+  assert.ok(!allReceived.includes('editable-content'), 'contenteditable paste must not be sent to terminal');
 
   await evaluate("Object.defineProperty(window, 'visualViewport', {configurable: true, value: window.__nativeViewport}); dispatchEvent(new Event('resize'))");
   const before = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
   assert.equal(before.total, 1);
+  responsesBeforeReload = receivedResponses;
   await send('Page.reload');
   await waitFor("document.querySelector('.xterm-rows')?.textContent.includes('browser-ready 한글')");
   const after = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
