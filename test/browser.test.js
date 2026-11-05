@@ -151,6 +151,40 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   while (!receivedInput.join('').includes('\x04') && Date.now() < controlDeadline) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(receivedInput.join('').includes('\x04'));
   assert.equal(await evaluate("document.getElementById('btn-terminal-ctrl').getAttribute('aria-pressed')"), 'false');
+  // A real touch tap on Tab must keep the xterm text input focused.
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true });
+  const tabPoint = await evaluate(`(() => {
+    const rect = document.querySelector('[data-terminal-key=Tab]').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  const beforeTouchTab = receivedInput.length;
+  await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [tabPoint] });
+  await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  const touchTabDeadline = Date.now() + 3000;
+  while (!receivedInput.slice(beforeTouchTab).join('').includes('\t') && Date.now() < touchTabDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(receivedInput.slice(beforeTouchTab).join('').includes('\t'));
+  assert.ok(await evaluate("document.activeElement.classList.contains('xterm-helper-textarea')"));
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  assert.deepEqual(await evaluate(`(async () => {
+    const session = getActiveSession();
+    const original = { engine: session.engine, instance: session.instance };
+    const keys = [];
+    const input = document.getElementById('vnc-keyboard-input');
+    Object.assign(session, { engine: 'vnc', instance: { sendKey: (...args) => keys.push(args) } });
+    try {
+      document.getElementById('btn-mobile-keyboard').click();
+      const focused = document.activeElement === input;
+      const clipboardOpen = document.getElementById('modal-clipboard').classList.contains('active');
+      input.value = 'a';
+      input.dispatchEvent(new InputEvent('input', { data: 'a' }));
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return { focused, clipboardOpen, keys };
+    } finally {
+      input.blur();
+      Object.assign(session, original);
+      original.instance.term.focus();
+    }
+  })()`), { focused: true, clipboardOpen: false, keys: [[97, 'KeyA', true], [97, 'KeyA', false]] });
   // Model a keyboard that reduces the visual viewport without resizing the layout viewport.
   await evaluate("window.__nativeViewport = visualViewport; Object.defineProperty(window, 'visualViewport', {configurable: true, value: {height: 320, width: 390, offsetTop: 0, offsetLeft: 0, scale: 1}}); dispatchEvent(new Event('resize'))");
   await waitFor("document.getElementById('mobile-input-bar').getBoundingClientRect().bottom <= 320");
@@ -406,6 +440,7 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 900, deviceScaleFactor: 1, mobile: false });
   await new Promise(resolve => setTimeout(resolve, 250));
   await evaluate("document.getElementById('btn-open-sidebar').click()");
+  assert.equal(await evaluate("document.activeElement.id"), 'btn-toggle-sidebar');
   assert.equal(await evaluate("document.getElementById('sidebar-backdrop').hidden"), false);
   await evaluate("document.getElementById('sidebar-backdrop').click()");
   await evaluate("document.querySelector('#viewer-tools > summary').click()");

@@ -148,6 +148,7 @@ const ctrlButton = document.getElementById('btn-terminal-ctrl');
 const altButton = document.getElementById('btn-terminal-alt');
 const modifierButtons = [ctrlButton, altButton];
 const zoomButtons = mobileInputBar.querySelectorAll('[data-remote-zoom]');
+const vncKeyboardInput = document.getElementById('vnc-keyboard-input');
 const keyboardButton = document.getElementById('btn-mobile-keyboard');
 const sessionMenuButton = document.getElementById('btn-session-menu');
 const rdpPanButton = document.getElementById('btn-rdp-pan');
@@ -200,17 +201,20 @@ function sendToolbarKey(session, key) {
   }
 }
 
-terminalKeys.addEventListener('pointerdown', event => {
-  // 마우스 클릭 시 원격 입력 포커스를 유지하면서 터치 스크롤은 허용한다.
-  if (event.pointerType === 'mouse' && event.target.closest('button')) event.preventDefault();
-});
+function preserveRemoteInputFocus(event) {
+  if (event.target.closest('[data-terminal-key], #btn-terminal-ctrl, #btn-terminal-alt')) event.preventDefault();
+}
+terminalKeys.addEventListener('pointerdown', preserveRemoteInputFocus);
+terminalKeys.addEventListener('mousedown', preserveRemoteInputFocus);
 mobileInputBar.addEventListener('click', event => {
   const button = event.target.closest('button');
   const session = getActiveSession();
   if (!button || session?.status !== 'connected' || !session.instance) return;
   if (modifierButtons.includes(button)) {
     button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
-    if (session.engine !== 'ssh') session.viewEl.querySelector('canvas')?.focus({ preventScroll: true });
+    if (session.engine !== 'ssh' && document.activeElement !== vncKeyboardInput) {
+      session.viewEl.querySelector('canvas')?.focus({ preventScroll: true });
+    }
   } else if (button.dataset.terminalKey) {
     sendToolbarKey(session, button.dataset.terminalKey);
   } else if (button.dataset.remoteZoom && session.engine !== 'ssh') {
@@ -242,7 +246,62 @@ sessionsWorkspace.addEventListener('keydown', event => {
 keyboardButton.addEventListener('click', () => {
   const session = getActiveSession();
   if (session?.engine === 'ssh') session.instance?.term?.focus();
-  else if (session) openClipboardModal(true);
+  else if (session?.engine === 'vnc') {
+    vncKeyboardInput.hidden = false;
+    vncKeyboardInput.focus({ preventScroll: true });
+  } else if (session) openClipboardModal(true);
+});
+let vncTyping = Promise.resolve();
+function queueVncInput(send) {
+  const session = getActiveSession();
+  if (session?.engine !== 'vnc' || session.status !== 'connected') return;
+  const instance = session.instance;
+  vncTyping = vncTyping.then(() => {
+    if (session === getActiveSession() && session.instance === instance && session.status === 'connected') return send(instance);
+  }).catch(err => showNotice('키 입력 실패: ' + err.message));
+}
+
+function sendVncKeyboardText() {
+  const text = vncKeyboardInput.value;
+  if (!text) return;
+  vncKeyboardInput.value = '';
+  const { ctrl, alt } = toolbarModifiers();
+  resetControlKey();
+  if ((ctrl || alt) && /^[a-z0-9]$/i.test(text)) {
+    const code = /^[0-9]$/.test(text) ? `Digit${text}` : `Key${text.toUpperCase()}`;
+    const session = getActiveSession();
+    queueVncInput(() => sendDesktopChord(session, [
+      ...(ctrl ? ['ControlLeft'] : []), ...(alt ? ['AltLeft'] : []), code,
+    ], { ...VNC_KEYSYMS, [code]: text.toLowerCase().charCodeAt(0) }));
+  } else {
+    queueVncInput(instance => sendKeystrokesToVnc(instance, text));
+  }
+}
+let composingVncText = false;
+vncKeyboardInput.addEventListener('compositionstart', () => { composingVncText = true; });
+vncKeyboardInput.addEventListener('compositionend', () => {
+  composingVncText = false;
+  setTimeout(() => { if (!composingVncText) sendVncKeyboardText(); }, 0);
+});
+vncKeyboardInput.addEventListener('input', event => {
+  if (!event.isComposing && !composingVncText) sendVncKeyboardText();
+});
+function sendVncBackspace(event) {
+  event.preventDefault();
+  queueVncInput(instance => instance.sendKey(0xff08, 'Backspace'));
+}
+vncKeyboardInput.addEventListener('keydown', event => {
+  if (event.key === 'Backspace' && !event.isComposing && !composingVncText) sendVncBackspace(event);
+});
+vncKeyboardInput.addEventListener('beforeinput', event => {
+  if (event.inputType === 'deleteContentBackward' && event.cancelable && !event.isComposing && !composingVncText) {
+    sendVncBackspace(event);
+  }
+});
+vncKeyboardInput.addEventListener('blur', () => {
+  vncKeyboardInput.hidden = true;
+  vncKeyboardInput.value = '';
+  composingVncText = false;
 });
 rdpResolution.addEventListener('change', () => {
   const session = getActiveSession();
@@ -284,7 +343,7 @@ function setSidebarOpen(open) {
 }
 
 btnToggleSidebar.addEventListener('click', () => { setSidebarOpen(false); btnOpenSidebar.focus(); });
-btnOpenSidebar.addEventListener('click', () => { setSidebarOpen(true); sidebarEl.querySelector('input').focus(); });
+btnOpenSidebar.addEventListener('click', () => { setSidebarOpen(true); btnToggleSidebar.focus({ preventScroll: true }); });
 sidebarBackdrop.addEventListener('click', () => { setSidebarOpen(false); btnOpenSidebar.focus(); });
 compactViewport.addEventListener('change', () => setSidebarOpen(!compactViewport.matches && localStorage.getItem('remotehub_sidebar_open') !== '0'));
 viewerTools.addEventListener('click', event => { if (event.target.closest('button') && !event.target.closest('.ssh-font-controls')) viewerTools.open = false; });

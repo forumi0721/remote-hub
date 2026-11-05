@@ -1313,6 +1313,15 @@ button:disabled { opacity: .55; cursor: wait; }
 .viewer-layout { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); padding-bottom: env(safe-area-inset-bottom); }
 .viewer-sidebar { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
 .context-menu-item { width: 100%; border: 0; background: transparent; text-align: left; font-family: inherit; }
+#vnc-keyboard-input {
+  flex-shrink: 0;
+  padding: .4rem .6rem;
+  resize: none;
+  font-size: 16px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
 .mobile-input-bar:not([hidden]) { display: flex; flex-shrink: 0; gap: .35rem; min-height: 50px; padding: 3px .35rem; background: var(--bg-secondary); border-top: 1px solid var(--border-color); }
 .mobile-input-bar button { flex-shrink: 0; min-width: 44px; min-height: 44px; padding: .4rem; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-hover); color: var(--text-primary); font: .8rem monospace; touch-action: manipulation; }
 .terminal-keys { display: flex; flex: 1; gap: .3rem; overflow-x: auto; min-width: 0; }
