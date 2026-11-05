@@ -1,6 +1,7 @@
-import RFB from '/novnc/core/rfb.js';
-import { TERMINAL_KEYS, terminalControlCharacter, sendRdpText } from './mobile-input.js';
-import { setupRdpInputHandlers, sendRdpCtrlAltDel } from './rdp-input.js';
+import { getKeysym } from '/novnc/core/input/util.js';
+import { ZoomableRfb, changeRemoteZoom, setupVncPinch } from './remote-zoom.js';
+import { terminalKeySequence, terminalControlCharacter, sendRdpText, VNC_KEYSYMS } from './mobile-input.js';
+import { setupRdpInputHandlers, sendRdpChord, SCANCODE_MAP } from './rdp-input.js';
 
 // 전역 상태
 let serverList = [];
@@ -144,6 +145,9 @@ async function pasteTerminalText(term, ws) {
 const mobileInputBar = document.getElementById('mobile-input-bar');
 const terminalKeys = document.getElementById('terminal-keys');
 const ctrlButton = document.getElementById('btn-terminal-ctrl');
+const altButton = document.getElementById('btn-terminal-alt');
+const modifierButtons = [ctrlButton, altButton];
+const zoomButtons = mobileInputBar.querySelectorAll('[data-remote-zoom]');
 const keyboardButton = document.getElementById('btn-mobile-keyboard');
 const sessionMenuButton = document.getElementById('btn-session-menu');
 const rdpPanButton = document.getElementById('btn-rdp-pan');
@@ -157,22 +161,88 @@ rdpPanButton.addEventListener('click', () => {
   rdpPanButton.textContent = session.rdpPan ? '화면 이동 중 (원격 입력 꺼짐)' : '화면 이동 모드';
 });
 const rdpResolution = document.getElementById('rdp-resolution');
-function resetControlKey() { ctrlButton.setAttribute('aria-pressed', 'false'); }
-terminalKeys.addEventListener('pointerdown', event => { if (event.target.closest('button')) event.preventDefault(); });
-terminalKeys.addEventListener('click', event => {
+function resetControlKey() {
+  for (const button of modifierButtons) button.setAttribute('aria-pressed', 'false');
+}
+
+function toolbarModifiers() {
+  const [ctrl, alt] = modifierButtons.map(button => button.getAttribute('aria-pressed') === 'true');
+  return { ctrl, alt };
+}
+
+function sendDesktopChord(session, codes, keysyms = VNC_KEYSYMS) {
+  if (session.engine === 'rdp') {
+    sendRdpChord(session.instance, rdpWasmModules, codes);
+  } else {
+    for (const code of codes) session.instance.sendKey(keysyms[code], code, true);
+    for (const code of [...codes].reverse()) session.instance.sendKey(keysyms[code], code, false);
+  }
+}
+
+function sendToolbarKey(session, key) {
+  const { ctrl, alt } = toolbarModifiers();
+  try {
+    if (session.engine === 'ssh') {
+      const { ws, term } = session.instance;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const sequence = terminalKeySequence(key, { ctrl, alt, applicationCursorKeys: term?.modes?.applicationCursorKeys });
+      if (sequence !== undefined) ws.send(sequence);
+    } else {
+      const codes = key === 'CtrlAltDel' ? ['ControlLeft', 'AltLeft', 'Delete']
+        : key === 'Interrupt' ? ['ControlLeft', 'KeyC']
+        : [...(ctrl ? ['ControlLeft'] : []), ...(alt ? ['AltLeft'] : []), key];
+      sendDesktopChord(session, codes);
+    }
+  } catch (err) {
+    showNotice('키 입력 실패: ' + err.message);
+  } finally {
+    resetControlKey();
+  }
+}
+
+terminalKeys.addEventListener('pointerdown', event => {
+  // 마우스 클릭 시 원격 입력 포커스를 유지하면서 터치 스크롤은 허용한다.
+  if (event.pointerType === 'mouse' && event.target.closest('button')) event.preventDefault();
+});
+mobileInputBar.addEventListener('click', event => {
   const button = event.target.closest('button');
   const session = getActiveSession();
-  if (!button || session?.engine !== 'ssh' || session.instance?.ws?.readyState !== WebSocket.OPEN) return;
-  if (button === ctrlButton) { ctrlButton.setAttribute('aria-pressed', String(ctrlButton.getAttribute('aria-pressed') !== 'true')); return; }
-  let key = TERMINAL_KEYS[button.dataset.terminalKey];
-  if (key?.startsWith('\x1b[') && session.instance.term?.modes?.applicationCursorKeys) key = key.replace('[', 'O');
-  if (key !== undefined) session.instance.ws.send(key);
-  resetControlKey();
+  if (!button || session?.status !== 'connected' || !session.instance) return;
+  if (modifierButtons.includes(button)) {
+    button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
+    if (session.engine !== 'ssh') session.viewEl.querySelector('canvas')?.focus({ preventScroll: true });
+  } else if (button.dataset.terminalKey) {
+    sendToolbarKey(session, button.dataset.terminalKey);
+  } else if (button.dataset.remoteZoom && session.engine !== 'ssh') {
+    zoomDesktop(session, Number(button.dataset.remoteZoom));
+  }
 });
+document.getElementById('btn-mobile-paste').addEventListener('click', openClipboardModal);
+
+sessionsWorkspace.addEventListener('keydown', event => {
+  const session = getActiveSession();
+  const { ctrl, alt } = toolbarModifiers();
+  if ((!ctrl && !alt) || session?.engine === 'ssh' || session?.status !== 'connected'
+      || !event.target.matches('canvas') || !session.viewEl.contains(event.target)) return;
+  const keysym = session.engine === 'vnc' ? getKeysym(event) : null;
+  if (/^(Control|Alt|Shift|Meta)/.test(event.code)
+      || (session.engine === 'rdp' ? SCANCODE_MAP[event.code] === undefined : !keysym)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  resetControlKey();
+  try {
+    sendDesktopChord(session, [
+      ...(ctrl ? ['ControlLeft'] : []), ...(alt ? ['AltLeft'] : []), event.code,
+    ], { ...VNC_KEYSYMS, [event.code]: keysym });
+  } catch (err) {
+    showNotice('키 입력 실패: ' + err.message);
+  }
+}, true);
+
 keyboardButton.addEventListener('click', () => {
   const session = getActiveSession();
   if (session?.engine === 'ssh') session.instance?.term?.focus();
-  else if (session) openClipboardModal();
+  else if (session) openClipboardModal(true);
 });
 rdpResolution.addEventListener('change', () => {
   const session = getActiveSession();
@@ -366,9 +436,9 @@ window.onSidebarItemClick = function(serverId) {
   openNewTab(serverId, true, false);
 };
 
-window.openNewTab = function(serverId, autoSwitch = true, isDuplicate = false) {
+window.openNewTab = function(serverId, autoSwitch = true, isDuplicate = false, initialServerInfo = null) {
   if (compactViewport.matches) setSidebarOpen(false);
-  createSessionTab(serverId, autoSwitch, null, isDuplicate);
+  createSessionTab(serverId, autoSwitch, null, isDuplicate, null, initialServerInfo);
 };
 
 // 3. 멀티 세션 탭 생성
@@ -379,7 +449,7 @@ function createSessionTab(...args) {
   if (deduplicate) pendingTabs.set(args[0], promise);
   return promise;
 }
-async function createSessionTabImpl(serverId, autoSwitch = true, customTabId = null, isDuplicate = false, customSessionKey = null) {
+async function createSessionTabImpl(serverId, autoSwitch = true, customTabId = null, isDuplicate = false, customSessionKey = null, initialServerInfo = null) {
   tabCounter++;
   const tabId = customTabId || `tab-${Date.now()}-${tabCounter}`;
   let sessionKey = customSessionKey;
@@ -395,14 +465,17 @@ async function createSessionTabImpl(serverId, autoSwitch = true, customTabId = n
   }
 
   // 서버 상세 정보 가져오기
-  let serverInfo = null;
-  try {
-    const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/connection`);
-    if (!res.ok) throw new Error('서버 접속 정보를 불러올 수 없습니다.');
-    serverInfo = await res.json();
-  } catch (err) {
-    showNotice('접속 정보 조회 실패: ' + err.message);
-    return;
+  let serverInfo = (isDuplicate && initialServerInfo) ? { ...initialServerInfo } : null;
+
+  if (!serverInfo) {
+    try {
+      const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/connection`);
+      if (!res.ok) throw new Error('서버 접속 정보를 불러올 수 없습니다.');
+      serverInfo = await res.json();
+    } catch (err) {
+      showNotice('접속 정보 조회 실패: ' + err.message);
+      return;
+    }
   }
 
   const proto = serverInfo.protocol || 'vnc';
@@ -546,13 +619,13 @@ function activateTab(tabId) {
   // SSH 터미널 리사이즈 및 포커스
   if (session.engine === 'ssh' && session.instance) {
     setTimeout(() => {
-      if (session.instance.fitAddon) {
+      if (session.instance?.fitAddon) {
         session.instance.fitAddon.fit();
       }
-      if (session.instance.sendResize) {
+      if (session.instance?.sendResize) {
         session.instance.sendResize();
       }
-      if (session.instance.term) {
+      if (session.instance?.term) {
         session.instance.term.focus();
       }
     }, 50);
@@ -567,10 +640,8 @@ function updateToolbarForSession(session) {
   btnReconnect.disabled = !session || Boolean(session.reconnecting);
   sessionMenuButton.disabled = !session;
   mobileInputBar.hidden = !session;
-  terminalKeys.hidden = session?.engine !== 'ssh';
-  keyboardButton.textContent = session?.engine === 'ssh' ? '키보드' : '텍스트 입력';
-  keyboardButton.disabled = !session || session.status !== 'connected';
-  terminalKeys.querySelectorAll('button').forEach(button => { button.disabled = !session || session.status !== 'connected'; });
+  for (const button of zoomButtons) button.hidden = !session || session.engine === 'ssh';
+  for (const button of mobileInputBar.querySelectorAll('button')) button.disabled = session?.status !== 'connected';
   document.getElementById('rdp-resolution-control').hidden = session?.engine !== 'rdp';
   document.getElementById('rdp-touch-hint').hidden = session?.engine !== 'rdp';
   rdpPanButton.hidden = session?.engine !== 'rdp';
@@ -578,7 +649,7 @@ function updateToolbarForSession(session) {
   rdpPanButton.textContent = session?.rdpPan ? '화면 이동 중 (원격 입력 꺼짐)' : '화면 이동 모드';
   rdpResolution.disabled = session?.status !== 'connected';
   rdpResolution.value = session?.rdpResolution || '1280x720';
-  if (!session) resetControlKey();
+  if (session?.status !== 'connected') resetControlKey();
   if (!session) {
     tabStatusEl.style.display = 'none';
     btnCad.style.display = 'none';
@@ -613,7 +684,7 @@ function updateToolbarForSession(session) {
     if (btnCopyOnSelect) btnCopyOnSelect.style.display = 'none';
     btnCad.style.display = 'inline-flex';
     btnScale.style.display = 'inline-flex';
-    btnScale.textContent = session.scaleEnabled ? '📐 창 맞춤: ON' : '📐 창 맞춤: OFF';
+    btnScale.textContent = session.zoom != null ? `📐 창 맞춤 · ${Math.round(session.zoom * 100)}%` : session.scaleEnabled ? '📐 창 맞춤: ON' : '📐 창 맞춤: OFF';
   }
 }
 
@@ -947,7 +1018,12 @@ async function startSshSession(session) {
       if (replaying) return;
 
       if (ws.readyState === WebSocket.OPEN) {
-        if (session.tabId === activeTabId && ctrlButton.getAttribute('aria-pressed') === 'true') { data = terminalControlCharacter(data); resetControlKey(); }
+        if (session.tabId === activeTabId) {
+          const { ctrl, alt } = toolbarModifiers();
+          if (ctrl) data = terminalControlCharacter(data);
+          if (alt) data = '\x1b' + data;
+          resetControlKey();
+        }
         ws.send(data);
       }
     });
@@ -1014,9 +1090,12 @@ async function startVncSession(session) {
   };
 
   try {
-    const rfb = new RFB(session.viewEl, wsUrl, options);
+    const rfb = new ZoomableRfb(session.viewEl, wsUrl, options);
     rfb.scaleViewport = session.scaleEnabled;
     rfb.resizeSession = false;
+    rfb.setZoom(session.zoom);
+    const canvas = session.viewEl.querySelector('canvas');
+    session.cleanupHandlers.push(setupVncPinch(canvas, (factor, x, y) => zoomDesktop(session, factor, x, y)));
 
     rfb.addEventListener('connect', () => {
       if (!current()) return;
@@ -1102,8 +1181,13 @@ async function startRdpSession(session) {
     canvas.tabIndex = 0;
     canvas.style.outline = 'none';
     canvas.style.display = 'block';
-    applyCanvasScale(canvas, session.scaleEnabled);
     session.viewEl.appendChild(canvas);
+    applyRdpScale(session, canvas);
+    const resolutionObserver = new MutationObserver(() => {
+      if (session.zoom != null) applyRdpScale(session, canvas);
+    });
+    resolutionObserver.observe(canvas, { attributeFilter: ['width', 'height'] });
+    session.cleanupHandlers.push(() => resolutionObserver.disconnect());
     canvas.focus();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1127,7 +1211,8 @@ async function startRdpSession(session) {
       canvas.style.cursor = style || 'default';
     });
 
-    const cleanupInput = setupRdpInputHandlers(canvas, () => session.instance, { DeviceEvent, InputTransaction });
+    const cleanupInput = setupRdpInputHandlers(canvas, () => session.instance, { DeviceEvent, InputTransaction },
+      (factor, x, y) => zoomDesktop(session, factor, x, y));
     session.cleanupHandlers.push(cleanupInput);
 
     const rdpSession = await builder.connect();
@@ -1151,8 +1236,11 @@ async function startRdpSession(session) {
   }
 }
 
-function applyCanvasScale(canvas, enabled) {
+function applyRdpScale(session, canvas) {
   if (!canvas) return;
+  const enabled = session.scaleEnabled && session.zoom == null;
+  canvas.style.width = session.zoom == null ? '' : `${canvas.width * session.zoom}px`;
+  canvas.style.height = session.zoom == null ? '' : `${canvas.height * session.zoom}px`;
   if (canvas.parentElement) { canvas.parentElement.style.alignItems = enabled ? 'center' : 'flex-start'; canvas.parentElement.style.justifyContent = enabled ? 'center' : 'flex-start'; }
   if (enabled) {
     canvas.style.maxWidth = '100%';
@@ -1220,30 +1308,30 @@ function getActiveSession() {
 }
 window.getActiveSession = getActiveSession;
 
+function zoomDesktop(session, factor, x, y) {
+  if (session.status !== 'connected' || session !== getActiveSession()) return;
+  changeRemoteZoom(session, session.viewEl.querySelector('canvas'), factor, x, y);
+  if (session.zoom != null) btnScale.textContent = `📐 창 맞춤 · ${Math.round(session.zoom * 100)}%`;
+}
+
 btnCad.addEventListener('click', () => {
   const session = getActiveSession();
-  if (!session) return;
-
-  if (session.engine === 'vnc' && session.instance) {
-    session.instance.sendCtrlAltDel();
-  } else if (session.engine === 'rdp' && session.instance && rdpWasmModules) {
-    sendRdpCtrlAltDel(session.instance, rdpWasmModules);
-  }
+  if (session?.status === 'connected') sendToolbarKey(session, 'CtrlAltDel');
 });
 
 btnScale.addEventListener('click', () => {
   const session = getActiveSession();
   if (!session) return;
 
-  session.scaleEnabled = !session.scaleEnabled;
-  btnScale.textContent = session.scaleEnabled ? '📐 창 맞춤: ON' : '📐 창 맞춤: OFF';
-
+  session.scaleEnabled = session.zoom != null || !session.scaleEnabled;
+  session.zoom = null;
   if (session.engine === 'vnc' && session.instance) {
     session.instance.scaleViewport = session.scaleEnabled;
+    session.instance.setZoom(null);
   } else if (session.engine === 'rdp') {
-    const canvas = session.viewEl.querySelector('canvas');
-    applyCanvasScale(canvas, session.scaleEnabled);
+    applyRdpScale(session, session.viewEl.querySelector('canvas'));
   }
+  updateToolbarForSession(session);
 });
 
 btnFullscreen.addEventListener('click', () => {
@@ -1256,16 +1344,24 @@ btnFullscreen.addEventListener('click', () => {
 });
 
 // 클립보드 모달 열기/닫기 및 액션
-function openClipboardModal() {
+function openClipboardModal(keyboardMode = false) {
   if (!modalClipboard) return;
   const activeSession = getActiveSession();
-  if (activeSession && activeSession.lastClipboardText && clipboardTextarea && !clipboardTextarea.value) {
+  const { ctrl, alt } = toolbarModifiers();
+  const chordMode = keyboardMode === true && (ctrl || alt);
+  modalClipboard.dataset.chordMode = String(chordMode);
+  if (chordMode) clipboardTextarea.value = '';
+  clipboardTextarea.placeholder = chordMode
+    ? 'Ctrl/Alt와 함께 보낼 영문자 또는 숫자 한 글자'
+    : '원격지로 전송할 텍스트를 입력하거나 붙여넣으세요...';
+  if (!chordMode && activeSession && activeSession.lastClipboardText && clipboardTextarea && !clipboardTextarea.value) {
     clipboardTextarea.value = activeSession.lastClipboardText;
   }
   // 브라우저 로컬 클립보드 자동 읽기 시도 (HTTPS 또는 지원되는 브라우저 권한일 경우)
-  if (navigator.clipboard && navigator.clipboard.readText) {
+  if (keyboardMode !== true && navigator.clipboard && navigator.clipboard.readText) {
     navigator.clipboard.readText().then(text => {
-      if (text && clipboardTextarea && !clipboardTextarea.value) {
+      if (modalClipboard.classList.contains('active') && getActiveSession() === activeSession &&
+          modalClipboard.dataset.chordMode !== 'true' && text && clipboardTextarea && !clipboardTextarea.value) {
         clipboardTextarea.value = text;
       }
     }).catch(() => {});
@@ -1274,7 +1370,7 @@ function openClipboardModal() {
   document.querySelector('.clipboard-secondary').open = false;
   modalClipboard.classList.add('active');
   if (clipboardTextarea) {
-    setTimeout(() => clipboardTextarea.focus(), 50);
+    clipboardTextarea.focus();
   }
 }
 
@@ -1448,8 +1544,29 @@ if (btnClipboardTypeRemote) {
     if (!clipboardTextarea) return;
     const text = clipboardTextarea.value;
     const activeSession = getActiveSession();
-    if (!activeSession) return;
+    if (!activeSession || activeSession.status !== 'connected' || !text) return;
 
+    if (modalClipboard.dataset.chordMode === 'true') {
+      const { ctrl, alt } = toolbarModifiers();
+      if (!/^[a-z0-9]$/i.test(text) || (!ctrl && !alt)) {
+        showClipboardToast('Ctrl/Alt 조합에 사용할 영문자 또는 숫자 한 글자를 입력하세요.');
+        return;
+      }
+      const code = /^[0-9]$/.test(text) ? `Digit${text}` : `Key${text.toUpperCase()}`;
+      try {
+        sendDesktopChord(activeSession, [
+          ...(ctrl ? ['ControlLeft'] : []), ...(alt ? ['AltLeft'] : []), code,
+        ], { ...VNC_KEYSYMS, [code]: text.toLowerCase().charCodeAt(0) });
+      } catch (err) {
+        showNotice('키 입력 실패: ' + err.message);
+      } finally {
+        resetControlKey();
+        closeClipboardModal();
+      }
+      return;
+    }
+
+    resetControlKey();
     closeClipboardModal();
 
     if (activeSession.engine === 'vnc' && activeSession.instance) {
@@ -1692,7 +1809,7 @@ if (ctxDuplicate) {
     const session = sessions.get(tabId);
     if (session) {
       // 탭 복제: 동일한 서버 세션을 새 독립 세션 탭으로 생성
-      openNewTab(session.serverId, true, true);
+      openNewTab(session.serverId, true, true, session.serverInfo);
     }
   });
 }

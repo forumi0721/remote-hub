@@ -136,6 +136,13 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   const keyDeadline = Date.now() + 3000;
   while (!receivedInput.join('').includes('\x03\t') && Date.now() < keyDeadline) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(receivedInput.join('').includes('\x03\t'));
+  await evaluate(`for (const key of ['PageUp', 'PageDown', 'CtrlAltDel']) {
+    document.querySelector('[data-terminal-key=' + key + ']').click();
+  }`);
+  const navigationKeys = '\x1b[5~\x1b[6~\x1b[3;7~';
+  const navigationDeadline = Date.now() + 3000;
+  while (!receivedInput.join('').includes(navigationKeys) && Date.now() < navigationDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(receivedInput.join('').includes(navigationKeys));
   await evaluate("document.getElementById('btn-mobile-keyboard').click()");
   assert.ok(await evaluate("document.activeElement.classList.contains('xterm-helper-textarea')"));
   await evaluate("document.getElementById('btn-terminal-ctrl').click()");
@@ -315,6 +322,61 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   const after = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
   assert.equal(after.sessions[0].key, before.sessions[0].key); assert.equal(shellCount, 1);
   assert.equal(receivedResponses, responsesBeforeReload, 'history replay must not send terminal query responses');
+
+  // Verify session duplication during active SSH connection without network dependency
+  // Track fetch calls and verify /connection fetch is NOT called during replication
+  await evaluate(`(() => {
+    window.__origFetch = window.fetch;
+    window.__connectionFetchCount = 0;
+    window.fetch = async (url, options) => {
+      if (typeof url === 'string' && url.includes('/connection')) {
+        window.__connectionFetchCount++;
+        throw new TypeError('Failed to fetch');
+      }
+      return window.__origFetch(url, options);
+    };
+  })()`);
+
+  // 1. Right-click context menu "세션 복제" duplicates active tab
+  await evaluate(`(() => {
+    const activeTab = document.querySelector('.session-tab.active');
+    activeTab.dispatchEvent(new MouseEvent('contextmenu', { clientX: 100, clientY: 50, bubbles: true }));
+    document.getElementById('ctx-duplicate').click();
+  })()`);
+  await waitFor("document.querySelectorAll('.session-tab').length === 2");
+  await waitFor("document.querySelectorAll('.tab-status-dot.connected').length === 2");
+  const sessionsAfterFirstDup = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
+  assert.equal(sessionsAfterFirstDup.total, 2, 'duplicated session creates second persistent backend SSH session');
+  assert.equal(await evaluate("window.__connectionFetchCount"), 0, 'first duplication must not call /connection fetch');
+
+  // 2. Repeated duplication creates third independent session
+  await evaluate(`(() => {
+    const activeTab = document.querySelector('.session-tab.active');
+    activeTab.dispatchEvent(new MouseEvent('contextmenu', { clientX: 100, clientY: 50, bubbles: true }));
+    document.getElementById('ctx-duplicate').click();
+  })()`);
+  await waitFor("document.querySelectorAll('.session-tab').length === 3");
+  await waitFor("document.querySelectorAll('.tab-status-dot.connected').length === 3");
+  const sessionsAfterSecondDup = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
+  assert.equal(sessionsAfterSecondDup.total, 3, 'repeated duplication creates third persistent backend SSH session');
+  assert.equal(await evaluate("window.__connectionFetchCount"), 0, 'repeated duplication must not call /connection fetch');
+
+  // Restore window.fetch
+  await evaluate(`(() => {
+    if (window.__origFetch) { window.fetch = window.__origFetch; delete window.__origFetch; delete window.__connectionFetchCount; }
+  })()`);
+
+  // Close the two duplicated tabs
+  await evaluate(`(() => {
+    const closeBtns = [...document.querySelectorAll('.session-tab .tab-close-btn')];
+    closeBtns[2].click();
+  })()`);
+  await waitFor("fetch('/api/sessions').then(r => r.json()).then(s => s.total === 2)");
+  await evaluate(`(() => {
+    const closeBtns = [...document.querySelectorAll('.session-tab .tab-close-btn')];
+    closeBtns[1].click();
+  })()`);
+  await waitFor("fetch('/api/sessions').then(r => r.json()).then(s => s.total === 1)");
   await evaluate("document.querySelector('.tab-close-btn').click()");
   await waitFor("fetch('/api/sessions').then(r => r.json()).then(s => s.total === 0)");
   await send('Page.reload');
@@ -431,7 +493,9 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
     const DeviceEvent = Object.fromEntries(['mouseMove','mouseButtonPressed','mouseButtonReleased','wheelRotations'].map(type => [type, (...values) => ({type, values})]));
     class InputTransaction { constructor() { this.events = []; } addEvent(event) { this.events.push(event); } }
     const session = {applyInputs: transaction => window.__pointerEvents.push(...transaction.events), releaseAllInputs() {}};
-    window.__disposeTouch = setupRdpInputHandlers(canvas, () => session, {DeviceEvent, InputTransaction});
+    window.__pinchFactors = [];
+    window.__disposeTouch = setupRdpInputHandlers(canvas, () => session, {DeviceEvent, InputTransaction},
+      factor => window.__pinchFactors.push(factor));
   })()`);
   await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
   const touch = (type, points) => send('Input.dispatchTouchEvent', { type, touchPoints: points.map(([id, x, y]) => ({ id, x, y })) });
@@ -453,6 +517,39 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   await evaluate("window.__pointerEvents = []; document.getElementById('touch-test').dataset.touchMode = 'pan'");
   await touch('touchStart', [[1, 80, 120]]); await touch('touchEnd', []);
   assert.equal(await evaluate('window.__pointerEvents.length'), 0, 'pan mode must not send remote clicks');
+  await evaluate("window.__pointerEvents = []; document.getElementById('touch-test').dataset.touchMode = 'remote'");
+  await touch('touchStart', [[1, 90, 140], [2, 160, 140]]);
+  await touch('touchMove', [[1, 65, 140], [2, 190, 140]]);
+  await touch('touchMove', [[1, 90, 140], [2, 160, 140]]);
+  await touch('touchEnd', []);
+  assert.ok(await evaluate('window.__pinchFactors.some(factor => factor > 1)'));
+  assert.ok(await evaluate('window.__pinchFactors.some(factor => factor < 1)'));
+  assert.equal(await evaluate("window.__pointerEvents.filter(event => event.type === 'wheelRotations' || event.type.includes('Button')).length"), 0);
   await evaluate("window.__disposeTouch(); document.getElementById('touch-test').remove()");
+  // noVNC's own gesture recognizer should route pinch to local zoom instead of the remote handler.
+  await evaluate(`(async () => {
+    const { default: GestureHandler } = await import('/novnc/core/input/gesturehandler.js');
+    const { setupVncPinch } = await import('/js/remote-zoom.js');
+    const canvas = document.createElement('canvas'); canvas.id = 'vnc-pinch-test';
+    Object.assign(canvas.style, {position: 'fixed', left: '0', top: '100px', width: '340px',
+      height: '150px', touchAction: 'none', zIndex: '9999'});
+    document.body.appendChild(canvas);
+    window.__vncZoom = [];
+    window.__vncRemotePinch = 0;
+    const gestures = new GestureHandler();
+    gestures.attach(canvas);
+    canvas.addEventListener('gesturemove', event => {
+      if (event.detail.type === 'pinch') window.__vncRemotePinch++;
+    });
+    const dispose = setupVncPinch(canvas, factor => window.__vncZoom.push(factor));
+    window.__disposeVncPinch = () => { dispose(); gestures.detach(); canvas.remove(); };
+  })()`);
+  await touch('touchStart', [[1, 110, 150], [2, 230, 150]]);
+  await touch('touchMove', [[1, 35, 150], [2, 305, 150]]);
+  await touch('touchMove', [[1, 70, 150], [2, 270, 150]]);
+  await touch('touchEnd', []);
+  assert.ok(await evaluate('window.__vncZoom.some(factor => factor > 1) && window.__vncZoom.some(factor => factor < 1)'));
+  assert.equal(await evaluate('window.__vncRemotePinch'), 0);
+  await evaluate('window.__disposeVncPinch()');
   assert.deepEqual(exceptions, []);
 });

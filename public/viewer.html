@@ -78,7 +78,7 @@
           <button id="btn-session-menu" class="btn btn-secondary btn-sm" type="button" aria-haspopup="menu" aria-controls="tab-context-menu">세션 관리</button>
           <label id="rdp-resolution-control" class="rdp-resolution-control" hidden>RDP 해상도<select id="rdp-resolution" aria-label="RDP 해상도"><option value="1280x720">1280 × 720</option><option value="1024x768">1024 × 768</option><option value="1920x1080">1920 × 1080</option></select></label>
           <button id="btn-rdp-pan" class="btn btn-secondary btn-sm" type="button" aria-pressed="false" hidden>화면 이동 모드</button>
-          <p id="rdp-touch-hint" class="control-hint" hidden>탭: 클릭 · 손가락 이동: 드래그 · 길게 누르기: 우클릭 · 두 손가락 이동: 스크롤</p>
+          <p id="rdp-touch-hint" class="control-hint" hidden>탭: 클릭 · 손가락 이동: 드래그 · 길게 누르기: 우클릭 · 두 손가락 이동: 스크롤 · 두 손가락 벌리기/오므리기: 확대/축소</p>
           <!-- SSH 터미널 폰트 크기 조절 컨트롤 -->
           <div id="ssh-font-controls" class="ssh-font-controls" style="display: none;">
             <button id="btn-font-dec" class="btn btn-secondary btn-xs" title="글꼴 작게 (Ctrl + -)">A-</button>
@@ -102,14 +102,21 @@
           <p>좌측 서버 목록 패널에서 접속할 서버를 클릭하여 새 탭을 열어보세요.</p>
         </div>
       </div>
-      <div id="mobile-input-bar" class="mobile-input-bar" role="toolbar" aria-label="원격 입력 보조 키" hidden>
+      <div id="mobile-input-bar" class="mobile-input-bar" role="group" aria-label="원격 입력 보조 키" hidden>
         <button id="btn-mobile-keyboard" type="button">키보드</button>
         <div id="terminal-keys" class="terminal-keys">
           <button type="button" data-terminal-key="Escape">Esc</button><button type="button" data-terminal-key="Tab">Tab</button>
           <button id="btn-terminal-ctrl" type="button" aria-pressed="false" title="다음 입력에 Ctrl 적용">Ctrl</button>
-          <button type="button" data-terminal-key="Interrupt" aria-label="Ctrl+C 중단">Ctrl+C</button>
+          <button id="btn-terminal-alt" type="button" aria-pressed="false" title="다음 입력에 Alt 적용">Alt</button>
+          <button type="button" data-terminal-key="Interrupt" aria-label="Ctrl+C">Ctrl+C</button>
+          <button type="button" data-terminal-key="CtrlAltDel">Ctrl+Alt+Del</button>
           <button type="button" data-terminal-key="ArrowLeft" aria-label="왼쪽 방향키">←</button><button type="button" data-terminal-key="ArrowUp" aria-label="위쪽 방향키">↑</button><button type="button" data-terminal-key="ArrowDown" aria-label="아래쪽 방향키">↓</button><button type="button" data-terminal-key="ArrowRight" aria-label="오른쪽 방향키">→</button>
+          <button type="button" data-terminal-key="PageUp">PgUp</button>
+          <button type="button" data-terminal-key="PageDown">PgDn</button>
+          <button id="btn-mobile-paste" type="button">텍스트 붙여넣기</button>
         </div>
+        <button type="button" data-remote-zoom="0.8" aria-label="원격 화면 축소">−</button>
+        <button type="button" data-remote-zoom="1.25" aria-label="원격 화면 확대">+</button>
       </div>
     </main>
   </div>

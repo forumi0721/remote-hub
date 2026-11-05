@@ -37,7 +37,7 @@ export const SCANCODE_MAP = {
   'Pause': 0xE11D45
 };
 
-export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTransaction }) {
+export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTransaction }, zoom) {
   const onKeyDown = (e) => {
     const session = getSession();
     if (!session) return;
@@ -155,7 +155,6 @@ export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTr
   const pointers = new Map();
   const mouseButtons = new Set();
   let scrolling = false;
-  let scrollRemainder = 0;
   function buttonEvent(button, down) {
     const session = getSession();
     if (!session) return;
@@ -193,16 +192,8 @@ export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTr
     const point = pointers.get(event.pointerId);
     if (!point) return;
     event.preventDefault();
-    const deltaY = event.clientY - point.y;
     point.x = event.clientX; point.y = event.clientY;
-    if (scrolling) {
-      scrollRemainder += deltaY;
-      if (Math.abs(scrollRemainder) >= 16) {
-        onWheel({ deltaY: -scrollRemainder, deltaX: 0, preventDefault() {} });
-        scrollRemainder = 0;
-      }
-      return;
-    }
+    if (scrolling) return;
     if (point.longPressed) return;
     if (Math.hypot(point.x - point.startX, point.y - point.startY) > 8) {
       clearTimeout(point.timer);
@@ -225,16 +216,55 @@ export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTr
       onMouseMove(event); buttonEvent(0, true); buttonEvent(0, false);
     }
     pointers.delete(event.pointerId);
-    if (!pointers.size) { scrolling = false; scrollRemainder = 0; }
+    if (!pointers.size) scrolling = false;
   };
   const onPointerUp = event => finishPointer(event);
   const onPointerCancel = event => finishPointer(event, true);
   const releaseInputs = () => {
     for (const point of pointers.values()) { clearTimeout(point.timer); if (point.pressed) buttonEvent(0, false); }
     for (const button of mouseButtons) buttonEvent(button, false);
-    pointers.clear(); mouseButtons.clear(); scrolling = false; scrollRemainder = 0;
+    pointers.clear(); mouseButtons.clear(); scrolling = false;
     getSession()?.releaseAllInputs?.();
   };
+  let twoFingerGesture;
+  const resetGesture = () => { twoFingerGesture = null; };
+  function onTouchGesture(event) {
+    if (!getSession()) return;
+    if (event.touches.length !== 2) {
+      resetGesture();
+      return;
+    }
+    const [first, second] = event.touches;
+    const x = (first.clientX + second.clientX) / 2;
+    const y = (first.clientY + second.clientY) / 2;
+    const distance = Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+    if (!twoFingerGesture) {
+      twoFingerGesture = { x, y, distance, mode: null };
+      return;
+    }
+    const previous = twoFingerGesture;
+    const movement = Math.hypot(x - previous.x, y - previous.y);
+    const spread = Math.abs(distance - previous.distance);
+    if (!previous.mode) {
+      if (spread >= 12 && spread >= movement) previous.mode = 'zoom';
+      else if (movement >= 16) previous.mode = 'scroll';
+      else return;
+    }
+    event.preventDefault();
+    if (previous.mode === 'zoom') {
+      if (distance && previous.distance) zoom?.(distance / previous.distance, x, y);
+    } else if (canvas.dataset.touchMode === 'pan') {
+      canvas.parentElement.scrollBy(previous.x - x, previous.y - y);
+    } else {
+      const deltaX = previous.x - x;
+      const deltaY = previous.y - y;
+      if (Math.hypot(deltaX, deltaY) < 16) return;
+      onWheel({ deltaX, deltaY, preventDefault() {} });
+    }
+    twoFingerGesture = { x, y, distance, mode: previous.mode };
+  }
+  const touchListeners = { touchstart: onTouchGesture, touchmove: onTouchGesture, touchend: resetGesture, touchcancel: resetGesture };
+  for (const [name, listener] of Object.entries(touchListeners)) canvas.addEventListener(name, listener, { passive: false });
   const onContextMenu = event => event.preventDefault();
   const listeners = { keydown: onKeyDown, keyup: onKeyUp, pointerdown: onPointerDown, pointermove: onPointerMove, pointerup: onPointerUp, pointercancel: onPointerCancel, lostpointercapture: onPointerCancel, blur: releaseInputs, contextmenu: onContextMenu };
   for (const [name, listener] of Object.entries(listeners)) canvas.addEventListener(name, listener);
@@ -243,22 +273,13 @@ export function setupRdpInputHandlers(canvas, getSession, { DeviceEvent, InputTr
     releaseInputs();
     for (const [name, listener] of Object.entries(listeners)) canvas.removeEventListener(name, listener);
     canvas.removeEventListener('wheel', onWheel);
+    for (const [name, listener] of Object.entries(touchListeners)) canvas.removeEventListener(name, listener);
   };
 }
 
-export function sendRdpCtrlAltDel(session, { DeviceEvent, InputTransaction }) {
-  if (!session) return;
-  try {
-    const tx = new InputTransaction();
-    // Ctrl + Alt + Del
-    tx.addEvent(DeviceEvent.keyPressed(0x1D));   // ControlLeft
-    tx.addEvent(DeviceEvent.keyPressed(0x38));   // AltLeft
-    tx.addEvent(DeviceEvent.keyPressed(0xE053)); // Delete
-    tx.addEvent(DeviceEvent.keyReleased(0xE053));
-    tx.addEvent(DeviceEvent.keyReleased(0x38));
-    tx.addEvent(DeviceEvent.keyReleased(0x1D));
-    session.applyInputs(tx);
-  } catch (err) {
-    console.warn('[RDP] Failed to send Ctrl+Alt+Del:', err);
-  }
+export function sendRdpChord(session, { DeviceEvent, InputTransaction }, codes) {
+  const transaction = new InputTransaction();
+  for (const code of codes) transaction.addEvent(DeviceEvent.keyPressed(SCANCODE_MAP[code]));
+  for (const code of [...codes].reverse()) transaction.addEvent(DeviceEvent.keyReleased(SCANCODE_MAP[code]));
+  session.applyInputs(transaction);
 }
