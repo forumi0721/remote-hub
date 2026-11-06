@@ -252,7 +252,7 @@ function renderServers(servers) {
           <div class="tags-container">${(server.tags || []).map(tag => `<button type="button" class="tag-badge" data-action="tag" data-tag="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`).join('')}</div>
         </div>
       </div>
-      <div class="card-footer"><div class="connect-actions"><a href="/viewer.html?id=${encodeURIComponent(server.id)}" class="btn ${sessionCount ? 'btn-continue' : 'btn-primary'} btn-sm">${connect}</a>${sessionCount ? `<a href="/viewer.html?id=${encodeURIComponent(server.id)}&forceNew=1" class="btn btn-secondary btn-sm">새 세션</a>` : ''}</div>
+      <div class="card-footer"><div class="connect-actions"><a href="/viewer.html?id=${encodeURIComponent(server.id)}" class="btn ${sessionCount ? 'btn-continue' : 'btn-primary'} btn-sm">${connect}</a>${sessionCount ? `<a href="/viewer.html?id=${encodeURIComponent(server.id)}&forceNew=1" class="btn btn-secondary btn-sm">새 세션</a>` : ''}${protocol === 'ssh' ? `<a href="/files.html?id=${encodeURIComponent(server.id)}" class="btn btn-secondary btn-sm">파일</a>` : ''}</div>
         <details class="card-menu"><summary class="btn btn-secondary btn-sm" aria-label="${escapeHtml(server.name)} 서버 관리">⋯</summary><div class="card-menu-panel">
           <button data-action="edit" data-id="${id}">서버 수정</button>
           <button data-action="up" data-id="${id}" ${index === 0 ? 'disabled' : ''}>위로 이동</button>

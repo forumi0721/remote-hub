@@ -87,6 +87,7 @@
           </div>
           <button id="btn-copy-on-select" class="btn btn-secondary btn-sm" title="선택 영역 자동 클립보드 복사 토글" style="display: none;">선택 자동 복사: OFF</button>
           <button id="btn-cad" class="btn btn-secondary btn-sm" title="Ctrl+Alt+Del" style="display: none;">Ctrl+Alt+Del</button>
+          <a id="btn-ssh-files" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" hidden>파일 관리</a>
           <button id="btn-clipboard" class="btn btn-secondary btn-sm" title="클립보드 관리 및 전송" style="display: none;">📋 클립보드</button>
           <button id="btn-scale" class="btn btn-secondary btn-sm" title="창 크기에 맞춤" style="display: none;">📐 창 맞춤: ON</button>
           <button id="btn-fullscreen" class="btn btn-secondary btn-sm" title="전체화면">⛶ 전체화면</button>
@@ -132,6 +133,13 @@
     </button>
     <button type="button" role="menuitem" class="context-menu-item" id="ctx-fresh">
       <span>🆕</span> 세션 새로 시작 (신규 접속)
+    </button>
+    <div class="context-menu-divider"></div>
+    <button type="button" role="menuitem" class="context-menu-item" id="ctx-move-left">
+      <span aria-hidden="true">←</span> 탭 왼쪽으로 이동
+    </button>
+    <button type="button" role="menuitem" class="context-menu-item" id="ctx-move-right">
+      <span aria-hidden="true">→</span> 탭 오른쪽으로 이동
     </button>
     <div class="context-menu-divider"></div>
     <button type="button" role="menuitem" class="context-menu-item" id="ctx-close">

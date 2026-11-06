@@ -2,7 +2,7 @@
 
 const { Client } = require('ssh2');
 const { StringDecoder } = require('string_decoder');
-const configManager = require('../config');
+const { createSshConnectConfig } = require('../ssh-connect-config');
 
 // 인메모리 지속 세션 풀 (sessionKey -> PersistentSshSession)
 const activeSshSessions = new Map();
@@ -52,28 +52,7 @@ class PersistentSshSession {
     this.attachedWs = initialWs;
     console.log(`${this.logPrefix} Creating new persistent SSH session for ${this.server.host}:${this.server.port || 22}`);
 
-    const connectConfig = {
-      hostHash: 'sha256',
-      hostVerifier: fingerprint => {
-        try { return configManager.trustRemoteIdentity(this.server.id, 'sshHostKeyFingerprint', fingerprint); }
-        catch (err) { console.error(`${this.logPrefix} Host verification failed:`, err.message); return false; }
-      },
-      host: this.server.host,
-      port: this.server.port || 22,
-      username: this.server.username || 'root',
-      readyTimeout: 15000,
-      keepaliveInterval: 10000,
-      keepaliveCountMax: 3
-    };
-
-    if (this.server.authType === 'key' && this.server.privateKey) {
-      connectConfig.privateKey = this.server.privateKey;
-      if (this.server.passphrase) {
-        connectConfig.passphrase = this.server.passphrase;
-      }
-    } else if (this.server.password) {
-      connectConfig.password = this.server.password;
-    }
+    const connectConfig = createSshConnectConfig(this.server, this.logPrefix);
 
     this.sshClient.on('ready', () => {
       console.log(`${this.logPrefix} SSH client authenticated and ready (cols: ${this.lastCols}, rows: ${this.lastRows})`);

@@ -29,6 +29,7 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   let shellCount = 0;
   let receivedResponses = 0;
   const receivedInput = [];
+  const uploadedNames = [];
   const hostKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' });
   const sshServer = new Server({ hostKeys: [hostKey] }, client => {
     connections.add(client); client.on('close', () => connections.delete(client)); client.on('error', () => {});
@@ -36,6 +37,25 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
     client.on('ready', () => client.on('session', accept => {
       const session = accept(); session.on('pty', accept => accept());
       session.on('window-change', accept => { if (accept) accept(); });
+      session.on('sftp', acceptSftp => {
+        const sftp = acceptSftp();
+        let listed = false;
+        sftp.on('REALPATH', id => sftp.name(id, [{ filename: '/home/test', attrs: {} }]));
+        sftp.on('OPENDIR', id => sftp.handle(id, Buffer.from([1])));
+        sftp.on('READDIR', id => {
+          if (listed) return sftp.status(id, 1);
+          listed = true;
+          sftp.name(id, [{ filename: '브라우저.txt', attrs: { mode: 0o100644 } }]);
+        });
+        sftp.on('LSTAT', id => sftp.status(id, 2));
+        sftp.on('OPEN', (id, name) => sftp.handle(id, Buffer.from(name)));
+        sftp.on('WRITE', id => sftp.status(id, 0));
+        sftp.on('RENAME', (id, _from, to) => {
+          uploadedNames.push(to);
+          sftp.status(id, 0);
+        });
+        sftp.on('CLOSE', id => sftp.status(id, 0));
+      });
       session.on('shell', accept => {
         shellCount++;
         const stream = accept();
@@ -122,6 +142,27 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.navigate', { url: `http://127.0.0.1:${port}/` });
   await waitFor("document.body.innerText.includes('Browser SSH')");
+  await evaluate(`document.querySelector('a[href="/files.html?id=browser-ssh"]').click()`);
+  await waitFor("document.getElementById('files-entries')?.textContent.includes('브라우저.txt')");
+  assert.equal(await evaluate("document.getElementById('files-path').value"), '/home/test');
+  assert.ok(await evaluate("document.querySelector('#files-entries a').href.includes('/files/download?')"));
+  await evaluate(`document.querySelector('[aria-label="브라우저.txt 삭제"]').click()`);
+  assert.ok(await evaluate("document.getElementById('files-delete-dialog').open"));
+  await evaluate(`document.querySelector('#files-delete-dialog [value="cancel"]').click()`);
+  assert.ok(await evaluate("!document.getElementById('files-delete-dialog').open"));
+  await evaluate(`(() => {
+    const input = document.getElementById('files-upload');
+    const selected = new DataTransfer();
+    selected.items.add(new File(['one'], '첫째.txt'));
+    selected.items.add(new File(['two'], '둘째.txt'));
+    input.files = selected.files;
+    input.dispatchEvent(new Event('change'));
+    document.getElementById('files-upload-submit').click();
+  })()`);
+  await waitFor("document.getElementById('files-status').textContent.includes('2개 중 2개 업로드 완료')");
+  assert.deepEqual(uploadedNames, ['/home/test/첫째.txt', '/home/test/둘째.txt']);
+
+
   await send('Page.navigate', { url: `http://127.0.0.1:${port}/viewer.html?id=browser-ssh` });
   await waitFor("document.querySelector('.xterm-rows')?.textContent.includes('browser-ready 한글')");
   await waitFor("document.querySelector('.tab-status-dot.connected') !== null");
@@ -154,7 +195,9 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   // A real touch tap on Tab must keep the xterm text input focused.
   await send('Emulation.setTouchEmulationEnabled', { enabled: true });
   const tabPoint = await evaluate(`(() => {
-    const rect = document.querySelector('[data-terminal-key=Tab]').getBoundingClientRect();
+    const tab = document.querySelector('[data-terminal-key=Tab]');
+    tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const rect = tab.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   })()`);
   const beforeTouchTab = receivedInput.length;
@@ -399,6 +442,27 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   await evaluate(`(() => {
     if (window.__origFetch) { window.fetch = window.__origFetch; delete window.__origFetch; delete window.__connectionFetchCount; }
   })()`);
+
+  const orderBeforeMove = await evaluate("Array.from(document.querySelectorAll('.session-tab'), tab => tab.id)");
+  await evaluate(`(() => {
+    const tab = document.querySelector('.session-tab:last-child');
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    document.getElementById('ctx-move-left').click();
+  })()`);
+  const movedOrder = [orderBeforeMove[0], orderBeforeMove[2], orderBeforeMove[1]];
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.session-tab'), tab => tab.id)"), movedOrder);
+  assert.deepEqual(await evaluate("JSON.parse(localStorage.getItem('remotehub_open_tabs')).map(tab => 'tab-header-' + tab.tabId)"), movedOrder);
+
+  await evaluate(`(() => {
+    const tabs = document.querySelectorAll('.session-tab');
+    const dataTransfer = new DataTransfer();
+    tabs[2].querySelector('.tab-title-text').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }));
+    tabs[0].dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+    tabs[0].dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+  })()`);
+  const draggedOrder = [movedOrder[2], movedOrder[0], movedOrder[1]];
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.session-tab'), tab => tab.id)"), draggedOrder);
+  assert.deepEqual(await evaluate("JSON.parse(localStorage.getItem('remotehub_open_tabs')).map(tab => 'tab-header-' + tab.tabId)"), draggedOrder);
 
   // Close the two duplicated tabs
   await evaluate(`(() => {

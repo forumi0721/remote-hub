@@ -40,6 +40,8 @@ const ctxReconnect = document.getElementById('ctx-reconnect');
 const ctxFresh = document.getElementById('ctx-fresh');
 const ctxClose = document.getElementById('ctx-close');
 const ctxTerminate = document.getElementById('ctx-terminate');
+const ctxMoveLeft = document.getElementById('ctx-move-left');
+const ctxMoveRight = document.getElementById('ctx-move-right');
 const ctxCloseOthers = document.getElementById('ctx-close-others');
 
 let terminalFontSize = parseInt(localStorage.getItem('remotehub_terminal_font_size'), 10) || 14;
@@ -559,7 +561,7 @@ async function createSessionTabImpl(serverId, autoSwitch = true, customTabId = n
   });
   tabEl.innerHTML = `
     <span>${icon}</span>
-    <span class="tab-title-text" title="${escapeHtml(serverInfo.name)}">${escapeHtml(serverInfo.name)}</span>
+    <span class="tab-title-text" draggable="true" title="${escapeHtml(serverInfo.name)}">${escapeHtml(serverInfo.name)}</span>
     <span class="tab-status-dot connecting" id="tab-dot-${tabId}">●</span>
     <button class="tab-close-btn" aria-label="세션 종료 및 탭 닫기" title="세션 종료 및 탭 닫기">&times;</button>
   `;
@@ -696,6 +698,10 @@ function activateTab(tabId) {
 
 // 상단 툴바 동기화
 function updateToolbarForSession(session) {
+  const filesLink = document.getElementById('btn-ssh-files');
+  filesLink.hidden = session?.engine !== 'ssh';
+  if (!filesLink.hidden) filesLink.href = '/files.html?' + new URLSearchParams({ id: session.serverId });
+
   btnReconnect.disabled = !session || Boolean(session.reconnecting);
   sessionMenuButton.disabled = !session;
   mobileInputBar.hidden = !session;
@@ -1826,6 +1832,10 @@ sessionMenuButton.addEventListener('click', () => {
 // 12. 탭 우클릭 컨텍스트 메뉴 (창 복제 / 재연결 / 닫기)
 function showTabContextMenu(x, y, tabId) {
   if (!tabContextMenuEl) return;
+  const tab = sessions.get(tabId)?.tabEl;
+  if (!tab) return;
+  ctxMoveLeft.disabled = !tab.previousElementSibling;
+  ctxMoveRight.disabled = !tab.nextElementSibling;
   contextMenuTargetTabId = tabId;
   tabContextMenuEl.style.display = 'block';
 
@@ -1838,6 +1848,84 @@ function showTabContextMenu(x, y, tabId) {
   tabContextMenuEl.style.left = `${posX}px`;
   tabContextMenuEl.style.top = `${posY}px`;
 }
+
+function moveSessionTab(tabId, offset) {
+  const ordered = [...sessions.values()];
+  const index = ordered.findIndex(session => session.tabId === tabId);
+  const destination = index + offset;
+  if (index < 0 || destination < 0 || destination >= ordered.length) return;
+
+  const session = ordered[index];
+  const neighbor = ordered[destination];
+  if (offset < 0) neighbor.tabEl.before(session.tabEl);
+  else neighbor.tabEl.after(session.tabEl);
+
+  ordered.splice(index, 1);
+  ordered.splice(destination, 0, session);
+  sessions.clear();
+  for (const item of ordered) sessions.set(item.tabId, item);
+  saveOpenTabs();
+  session.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  session.tabEl.focus({ preventScroll: true });
+}
+
+for (const [button, offset] of [[ctxMoveLeft, -1], [ctxMoveRight, 1]]) {
+  button.addEventListener('click', () => {
+    const tabId = contextMenuTargetTabId;
+    hideTabContextMenu();
+    moveSessionTab(tabId, offset);
+  });
+}
+
+let draggedSessionTab = null;
+let sessionTabDropTarget = null;
+
+function highlightSessionTabDropTarget(tab) {
+  sessionTabDropTarget?.classList.remove('tab-drop-target');
+  sessionTabDropTarget = tab;
+  sessionTabDropTarget?.classList.add('tab-drop-target');
+}
+
+function finishSessionTabDrag() {
+  draggedSessionTab?.classList.remove('tab-dragging');
+  draggedSessionTab = null;
+  highlightSessionTabDropTarget(null);
+}
+
+tabsContainer.addEventListener('dragstart', event => {
+  if (!event.target.matches('.tab-title-text') || !event.dataTransfer) return;
+  draggedSessionTab = event.target.closest('.session-tab');
+  draggedSessionTab.classList.add('tab-dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', draggedSessionTab.id);
+});
+
+tabsContainer.addEventListener('dragover', event => {
+  if (!draggedSessionTab) return;
+  const tab = event.target.closest('.session-tab');
+  highlightSessionTabDropTarget(tab === draggedSessionTab ? null : tab);
+  if (!sessionTabDropTarget) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+});
+
+tabsContainer.addEventListener('dragleave', event => {
+  if (!tabsContainer.contains(event.relatedTarget)) highlightSessionTabDropTarget(null);
+});
+
+tabsContainer.addEventListener('drop', event => {
+  if (!draggedSessionTab) return;
+  const target = event.target.closest('.session-tab');
+  const ordered = [...sessions.values()];
+  const from = ordered.findIndex(session => session.tabEl === draggedSessionTab);
+  const to = ordered.findIndex(session => session.tabEl === target);
+  finishSessionTabDrag();
+  if (from < 0 || to < 0 || from === to) return;
+  event.preventDefault();
+  moveSessionTab(ordered[from].tabId, to - from);
+});
+
+tabsContainer.addEventListener('dragend', finishSessionTabDrag);
 
 function hideTabContextMenu() {
   if (tabContextMenuEl) {

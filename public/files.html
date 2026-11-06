@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>원격 파일 관리 · RemoteHub</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script defer src="/js/ui.js"></script>
+  <script defer src="/js/files.js"></script>
+</head>
+<body>
+  <main class="container file-browser">
+    <nav class="file-actions" aria-label="원격 접속 메뉴">
+      <a href="/" class="btn btn-secondary">서버 목록</a>
+      <a id="files-terminal" class="btn btn-secondary" hidden>SSH 터미널</a>
+    </nav>
+    <h1 id="files-title">원격 파일 관리</h1>
+    <form id="files-location" class="file-actions">
+      <label for="files-path">원격 경로</label>
+      <input id="files-path" value="." required>
+      <button class="btn btn-primary" type="submit">이동</button>
+      <button class="btn btn-secondary" id="files-parent" type="button" disabled>상위 폴더</button>
+    </form>
+    <div class="file-actions">
+      <button class="btn btn-secondary" id="files-mkdir" type="button" disabled>새 폴더</button>
+      <label for="files-upload">업로드할 파일</label>
+      <input id="files-upload" type="file" multiple disabled>
+      <button class="btn btn-primary" id="files-upload-submit" type="button" disabled>업로드</button>
+    </div>
+    <div id="files-transfer" class="file-actions" hidden>
+      <label id="files-progress-label" for="files-progress">업로드 진행률</label>
+      <progress id="files-progress" max="100"></progress>
+      <button class="btn btn-secondary" id="files-cancel-transfer" type="button">전송 취소</button>
+    </div>
+    <p>다운로드 진행률과 취소는 브라우저의 다운로드 목록에서 확인할 수 있습니다.</p>
+    <p id="files-status" role="status"></p>
+    <ul id="files-entries" class="file-entries" aria-label="원격 파일 목록"></ul>
+    <dialog id="files-delete-dialog" aria-labelledby="files-delete-title" aria-describedby="files-delete-description">
+      <form method="dialog">
+        <h2 id="files-delete-title">원격 항목 삭제</h2>
+        <p id="files-delete-description"></p>
+        <div class="file-actions">
+          <button class="btn btn-secondary" value="cancel" autofocus>취소</button>
+          <button class="btn btn-danger" value="delete">삭제</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="files-name-dialog" aria-labelledby="files-name-title">
+      <form id="files-name-form">
+        <h2 id="files-name-title"></h2>
+        <label for="files-name">이름</label>
+        <input id="files-name" required autofocus maxlength="255">
+        <div class="file-actions">
+          <button class="btn btn-secondary" id="files-name-cancel" type="button">취소</button>
+          <button class="btn btn-primary" type="submit">확인</button>
+        </div>
+      </form>
+    </dialog>
+  </main>
+</body>
+</html>

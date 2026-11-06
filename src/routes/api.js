@@ -3,6 +3,7 @@ const router = express.Router();
 const net = require('net');
 const bcrypt = require('bcryptjs');
 const configManager = require('../config');
+const { listRemoteFiles, downloadRemoteFile, uploadRemoteFile, changeRemoteFiles } = require('./sftp');
 const { closeConnections, closeOtherConnections } = require('../connections');
 
 // 인증 확인 미들웨어
@@ -140,6 +141,11 @@ router.get('/servers', requireAuth, (req, res) => {
   const servers = configManager.getSanitizedServers();
   res.json(servers);
 });
+
+router.get('/servers/:id/files', requireAuth, listRemoteFiles);
+router.get('/servers/:id/files/download', requireAuth, downloadRemoteFile);
+router.patch('/servers/:id/files/upload', requireAuth, uploadRemoteFile);
+router.post('/servers/:id/files', requireAuth, changeRemoteFiles);
 
 // 6. 접속 정보 조회: SSH 인증 정보는 백엔드에서만 사용
 router.get('/servers/:id/connection', requireAuth, (req, res) => {

@@ -821,6 +821,10 @@ header {
   position: relative;
 }
 
+.session-tab .tab-title-text[draggable="true"] { cursor: grab; }
+.session-tab.tab-dragging { opacity: .55; }
+.session-tab.tab-drop-target { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 .session-tab:hover:not(.active) {
   background-color: #334155;
   color: var(--text-primary);
@@ -1367,3 +1371,16 @@ button:disabled { opacity: .55; cursor: wait; }
 .clipboard-secondary:not([open]) .clipboard-secondary-panel { display: none; }
 .session-feedback { position: absolute; z-index: 5; left: 12px; bottom: 12px; max-width: calc(100% - 24px); display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: .75rem; border: 1px solid var(--border-color); border-radius: 8px; background: #0f172af2; color: var(--text-primary); font-size: .85rem; }
 .session-feedback[hidden], .session-feedback button[hidden] { display: none; }
+
+.file-browser { display: grid; gap: 1rem; }
+.file-actions, .file-entries > li { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.file-entries { display: grid; gap: .5rem; padding: 0; list-style: none; }
+.file-entries > li { padding: .5rem; border-bottom: 1px solid var(--border-color); overflow-wrap: anywhere; }
+.file-browser input { max-width: 100%; font-size: 16px; }
+#files-name-dialog, #files-delete-dialog { max-width: calc(100% - 2rem); margin: auto; padding: 1rem; color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border-color); }
+#files-name-dialog form, #files-delete-dialog form { display: grid; gap: .75rem; }
+#files-name-dialog::backdrop, #files-delete-dialog::backdrop { background: #0008; }
+
+#btn-ssh-files[hidden], #files-terminal[hidden] { display: none; }
+
+#files-transfer[hidden] { display: none; }
