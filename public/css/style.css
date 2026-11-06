@@ -1322,7 +1322,7 @@ button:disabled { opacity: .55; cursor: wait; }
   color: var(--text-primary);
   border: 1px solid var(--border-color);
 }
-.mobile-input-bar:not([hidden]) { display: flex; flex-shrink: 0; gap: .35rem; min-height: 50px; padding: 3px .35rem; background: var(--bg-secondary); border-top: 1px solid var(--border-color); }
+.mobile-input-bar:not([hidden]) { display: flex; flex-shrink: 0; gap: .35rem; padding: 0 .35rem; background: var(--bg-secondary); border-top: 1px solid var(--border-color); }
 .mobile-input-bar button { flex-shrink: 0; min-width: 44px; min-height: 44px; padding: .4rem; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-hover); color: var(--text-primary); font: .8rem monospace; touch-action: manipulation; }
 .terminal-keys { display: flex; flex: 1; gap: .3rem; overflow-x: auto; min-width: 0; }
 .mobile-input-bar button[aria-pressed="true"] { background: var(--accent); border-color: #93c5fd; }
@@ -1339,7 +1339,7 @@ button:disabled { opacity: .55; cursor: wait; }
 #modal-clipboard .modal-footer { flex-direction: column-reverse; align-items: stretch; }
 #modal-clipboard .modal-footer > div { flex-direction: column-reverse; }
 @media (pointer: coarse), (max-width: 900px) {
-  .viewer-topbar { height: 52px; padding-top: env(safe-area-inset-top); }
+  .viewer-topbar { height: calc(46px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); }
   .viewer-topbar .btn, .viewer-tools > summary, .btn-sidebar-toggle { min-height: 44px; }
   .session-tab { min-width: 88px; min-height: 48px; padding: 0 .2rem 0 .4rem; gap: .2rem; }
   .tab-close-btn { min-width: 44px; min-height: 44px; }
@@ -1355,7 +1355,6 @@ button:disabled { opacity: .55; cursor: wait; }
 }
 .viewer-page { position: fixed; top: var(--visual-top, 0px); left: var(--visual-left, 0px); width: var(--visual-width, 100%); min-height: 0; }
 @media (pointer: coarse), (max-width: 900px) {
-  .viewer-topbar { height: calc(52px + env(safe-area-inset-top)); }
   .tab-context-menu { bottom: calc(100dvh - var(--visual-height, 100dvh) - var(--visual-top, 0px) + max(12px, env(safe-area-inset-bottom))); }
   .clipboard-toast, .ui-toast { bottom: calc(100dvh - var(--visual-height, 100dvh) - var(--visual-top, 0px) + max(16px, env(safe-area-inset-bottom))); }
 }

@@ -67,6 +67,13 @@ app.use('/ironrdp', express.static(path.join(__dirname, '../node_modules/ironrdp
 app.use('/xterm', express.static(path.join(__dirname, '../node_modules/@xterm/xterm')));
 app.use('/xterm-addon-fit', express.static(path.join(__dirname, '../node_modules/@xterm/addon-fit')));
 
+app.get('/licenses/remotehub', (_req, res) => {
+  res.type('text/plain').sendFile(path.join(__dirname, '../LICENSE'));
+});
+app.get('/licenses/third-party', (_req, res) => {
+  res.type('text/plain').sendFile(path.join(__dirname, '../THIRD_PARTY_NOTICES.txt'));
+});
+
 // 4. 프론트엔드 정적 파일 서빙
 app.use(express.static(path.join(__dirname, '../public')));
 

@@ -7,6 +7,7 @@ WORKDIR /app
 
 # 의존성 복사 및 설치 (캐싱 활용)
 COPY package*.json ./
+COPY LICENSE THIRD_PARTY_NOTICES.txt ./
 RUN npm ci --omit=dev
 
 # 소스 및 정적 자산 복사
