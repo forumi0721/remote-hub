@@ -10,31 +10,66 @@
 </head>
 <body>
   <main class="container file-browser">
-    <nav class="file-actions" aria-label="원격 접속 메뉴">
-      <a href="/" class="btn btn-secondary">서버 목록</a>
-      <a id="files-terminal" class="btn btn-secondary" hidden>SSH 터미널</a>
-    </nav>
-    <h1 id="files-title">원격 파일 관리</h1>
-    <form id="files-location" class="file-actions">
-      <label for="files-path">원격 경로</label>
-      <input id="files-path" value="." required>
-      <button class="btn btn-primary" type="submit">이동</button>
-      <button class="btn btn-secondary" id="files-parent" type="button" disabled>상위 폴더</button>
-    </form>
-    <div class="file-actions">
-      <button class="btn btn-secondary" id="files-mkdir" type="button" disabled>새 폴더</button>
-      <label for="files-upload">업로드할 파일</label>
-      <input id="files-upload" type="file" multiple disabled>
-      <button class="btn btn-primary" id="files-upload-submit" type="button" disabled>업로드</button>
+    <header class="file-header">
+      <div>
+        <nav class="file-actions" aria-label="원격 접속 메뉴">
+          <a href="/" class="btn btn-secondary">서버 목록</a>
+          <a id="files-terminal" class="btn btn-secondary" hidden>SSH 터미널</a>
+        </nav>
+        <h1 id="files-title">원격 파일 관리</h1>
+      </div>
+      <div class="file-header-icon" aria-hidden="true">⌁</div>
+    </header>
+    <section class="file-toolbar" aria-label="파일 탐색기 도구">
+      <div class="file-toolbar-group">
+        <button class="icon-btn" id="files-back" type="button" title="뒤로" aria-label="뒤로" disabled>←</button>
+        <button class="icon-btn" id="files-forward" type="button" title="앞으로" aria-label="앞으로" disabled>→</button>
+        <button class="icon-btn" id="files-parent" type="button" title="상위 폴더" aria-label="상위 폴더" disabled>↑</button>
+        <button class="icon-btn" id="files-refresh" type="button" title="새로 고침" aria-label="새로 고침" disabled>↻</button>
+      </div>
+      <form id="files-location" class="file-location">
+        <label class="sr-only" for="files-path">원격 경로</label>
+        <span aria-hidden="true">⌕</span>
+        <input id="files-path" value="." required autocomplete="off">
+        <button class="sr-only" type="submit">이동</button>
+      </form>
+      <div class="file-toolbar-group file-toolbar-end">
+        <button class="btn btn-secondary" id="files-mkdir" type="button" disabled>＋ 새 폴더</button>
+        <label class="btn btn-primary file-upload-label" for="files-upload">업로드</label>
+        <input id="files-upload" type="file" multiple disabled>
+      </div>
+    </section>
+    <nav id="files-breadcrumbs" class="file-breadcrumbs" aria-label="현재 경로"></nav>
+    <div class="file-list-toolbar">
+      <div>
+        <strong>파일</strong>
+        <span id="files-count" class="file-count"></span>
+      </div>
+      <label class="file-search">
+        <span aria-hidden="true">⌕</span>
+        <span class="sr-only">파일 검색</span>
+        <input id="files-search" type="search" placeholder="현재 폴더 검색" autocomplete="off">
+      </label>
+      <button class="btn btn-secondary" id="files-upload-submit" type="button" disabled>선택 파일 업로드</button>
     </div>
     <div id="files-transfer" class="file-actions" hidden>
       <label id="files-progress-label" for="files-progress">업로드 진행률</label>
       <progress id="files-progress" max="100"></progress>
       <button class="btn btn-secondary" id="files-cancel-transfer" type="button">전송 취소</button>
     </div>
-    <p>다운로드 진행률과 취소는 브라우저의 다운로드 목록에서 확인할 수 있습니다.</p>
-    <p id="files-status" role="status"></p>
-    <ul id="files-entries" class="file-entries" aria-label="원격 파일 목록"></ul>
+    <p id="files-status" class="file-status" role="status"></p>
+    <div class="file-list-wrap">
+      <div class="file-list-head" aria-hidden="true">
+        <span>이름</span><span>종류</span><span>크기</span><span>수정한 날짜</span><span></span>
+      </div>
+      <ul id="files-entries" class="file-entries" aria-label="원격 파일 목록"></ul>
+      <div id="files-empty" class="file-empty" hidden>
+        <div class="file-empty-icon" aria-hidden="true">□</div>
+        <strong>이 폴더는 비어 있습니다</strong>
+        <span>파일을 업로드하거나 새 폴더를 만들어 보세요.</span>
+      </div>
+    </div>
+    <p class="file-hint">폴더는 더블클릭으로 열고, 파일을 선택하면 작업 메뉴가 표시됩니다.</p>
     <dialog id="files-delete-dialog" aria-labelledby="files-delete-title" aria-describedby="files-delete-description">
       <form method="dialog">
         <h2 id="files-delete-title">원격 항목 삭제</h2>

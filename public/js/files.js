@@ -5,7 +5,14 @@ const endpoint = serverId ? `/api/servers/${encodeURIComponent(serverId)}/files`
 const pathInput = document.getElementById('files-path');
 const entries = document.getElementById('files-entries');
 const statusText = document.getElementById('files-status');
+const emptyState = document.getElementById('files-empty');
+const countText = document.getElementById('files-count');
+const breadcrumbs = document.getElementById('files-breadcrumbs');
+const searchInput = document.getElementById('files-search');
 const parentButton = document.getElementById('files-parent');
+const backButton = document.getElementById('files-back');
+const forwardButton = document.getElementById('files-forward');
+const refreshButton = document.getElementById('files-refresh');
 const mkdirButton = document.getElementById('files-mkdir');
 const fileInput = document.getElementById('files-upload');
 const uploadButton = document.getElementById('files-upload-submit');
@@ -22,6 +29,9 @@ let busy = false;
 let nameOperation;
 let deleteOperation;
 let uploadController;
+let directoryEntries = [];
+let history = [];
+let historyIndex = -1;
 
 function filesUrl(suffix, query) {
   return endpoint + suffix + '?' + new URLSearchParams(query);
@@ -42,6 +52,9 @@ async function checked(response) {
 function syncControls() {
   pathInput.form.querySelector('[type="submit"]').disabled = busy || !endpoint;
   parentButton.disabled = busy || !directory || directory === '/';
+  backButton.disabled = busy || historyIndex <= 0;
+  forwardButton.disabled = busy || historyIndex < 0 || historyIndex >= history.length - 1;
+  refreshButton.disabled = busy || !directory;
   mkdirButton.disabled = fileInput.disabled = busy || !directory;
   uploadButton.disabled = fileInput.disabled || !fileInput.files.length;
   for (const button of entries.querySelectorAll('button')) button.disabled = busy;
@@ -63,6 +76,109 @@ async function run(message, work) {
 
 function inDirectory(name) {
   return directory.endsWith('/') ? directory + name : directory + '/' + name;
+}
+
+function formatSize(size, type) {
+  if (type === 'directory') return '—';
+  if (!Number.isFinite(size) || size < 0) return '—';
+  if (!size) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1);
+  return `${(size / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
+function formatDate(value) {
+  if (!value) return '—';
+  return new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+}
+
+function updateBreadcrumbs() {
+  breadcrumbs.replaceChildren();
+  if (!directory) return;
+  const parts = directory.split('/').filter(Boolean);
+  const root = document.createElement('button');
+  root.type = 'button';
+  root.className = 'file-crumb';
+  root.textContent = parts.length ? '루트' : directory;
+  root.addEventListener('click', () => browse('/'));
+  breadcrumbs.append(root);
+  let current = '';
+  for (const part of parts) {
+    current += `/${part}`;
+    const separator = document.createElement('span');
+    separator.textContent = '/';
+    separator.className = 'file-crumb-separator';
+    const crumb = document.createElement('button');
+    crumb.type = 'button';
+    crumb.className = 'file-crumb';
+    crumb.textContent = part;
+    const target = current;
+    crumb.addEventListener('click', () => browse(target));
+    breadcrumbs.append(separator, crumb);
+  }
+}
+
+function renderEntries() {
+  const query = searchInput.value.trim().toLocaleLowerCase();
+  const visible = directoryEntries.filter(item => item.name.toLocaleLowerCase().includes(query));
+  entries.replaceChildren();
+  emptyState.hidden = visible.length !== 0;
+  countText.textContent = `${visible.length}개`;
+  for (const item of visible) {
+    const row = document.createElement('li');
+    row.className = 'file-row';
+    row.tabIndex = 0;
+    row.dataset.name = item.name;
+    row.dataset.type = item.type;
+    const main = document.createElement('div');
+    main.className = 'file-name-cell';
+    const icon = document.createElement('span');
+    icon.className = `file-type-icon ${item.type}`;
+    icon.textContent = item.type === 'directory' ? '▰' : item.type === 'symlink' ? '↗' : '▱';
+    icon.setAttribute('aria-hidden', 'true');
+    const name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = item.name;
+    main.append(icon, name);
+    const type = document.createElement('span');
+    type.className = 'file-meta';
+    type.textContent = item.type === 'directory' ? '폴더' : item.type === 'symlink' ? '링크' : '파일';
+    const size = document.createElement('span');
+    size.className = 'file-meta';
+    size.textContent = formatSize(item.size, item.type);
+    const modified = document.createElement('span');
+    modified.className = 'file-meta';
+    modified.textContent = formatDate(item.modifiedAt);
+    const actions = document.createElement('span');
+    actions.className = 'file-row-actions';
+    if (item.type === 'file' || item.type === 'symlink') {
+      const download = document.createElement('a');
+      download.className = 'btn btn-secondary btn-xs';
+      download.href = filesUrl('/download', { path: inDirectory(item.name) });
+      download.textContent = '다운로드';
+      download.setAttribute('aria-label', `${item.name} 다운로드`);
+      actions.append(download);
+    }
+    const rename = nameButton('이름 변경', () => openNameDialog('rename', item.name));
+    rename.setAttribute('aria-label', `${item.name} 이름 변경`);
+    const remove = nameButton('삭제', () => openDeleteDialog(item));
+    remove.setAttribute('aria-label', `${item.name} 삭제`);
+    actions.append(rename, remove);
+    row.append(main, type, size, modified, actions);
+    const open = () => {
+      if (item.type === 'directory' || item.type === 'symlink') browse(inDirectory(item.name));
+    };
+    row.addEventListener('dblclick', open);
+    row.addEventListener('keydown', event => {
+      if (event.key === 'Enter') open();
+    });
+    row.addEventListener('click', event => {
+      if (event.target.closest('button, a')) return;
+      entries.querySelector('.selected')?.classList.remove('selected');
+      row.classList.add('selected');
+    });
+    entries.append(row);
+  }
 }
 
 function nameButton(label, action) {
@@ -110,38 +226,26 @@ async function loadDirectory(path) {
   const result = await response.json();
   directory = result.path;
   pathInput.value = directory;
-  entries.replaceChildren();
-  for (const item of result.entries) {
-    const row = document.createElement('li');
-    const name = document.createElement('span');
-    name.textContent = item.name;
-    if (item.type === 'directory' || item.type === 'symlink') {
-      const open = nameButton(item.name, () => browse(inDirectory(item.name)));
-      if (item.type === 'symlink') open.title = '폴더를 가리키는 링크 열기';
-      row.append(open);
-    } else {
-      row.append(name);
-    }
-    if (item.type === 'file' || item.type === 'symlink') {
-      const download = document.createElement('a');
-      download.className = 'btn btn-secondary btn-sm';
-      download.href = filesUrl('/download', { path: inDirectory(item.name) });
-      download.textContent = '다운로드';
-      download.setAttribute('aria-label', `${item.name} 다운로드`);
-      row.append(download);
-    }
-    const rename = nameButton('이름 변경', () => openNameDialog('rename', item.name));
-    rename.setAttribute('aria-label', `${item.name} 이름 변경`);
-    const remove = nameButton('삭제', () => openDeleteDialog(item));
-    remove.setAttribute('aria-label', `${item.name} 삭제`);
-    row.append(rename, remove);
-    entries.append(row);
-  }
-  statusText.textContent = result.entries.length ? `${result.entries.length}개 항목` : '빈 폴더입니다.';
+  directoryEntries = [...result.entries].sort((a, b) => {
+    if (a.type === 'directory' && b.type !== 'directory') return -1;
+    if (a.type !== 'directory' && b.type === 'directory') return 1;
+    return a.name.localeCompare(b.name, 'ko');
+  });
+  updateBreadcrumbs();
+  renderEntries();
+  statusText.textContent = directoryEntries.length ? `${directoryEntries.length}개 항목` : '빈 폴더입니다.';
 }
 
 function browse(path) {
-  return run('원격 폴더를 여는 중…', () => loadDirectory(path));
+  return run('원격 폴더를 여는 중…', async () => {
+    await loadDirectory(path);
+    if (history[historyIndex] !== directory) {
+      history = history.slice(0, historyIndex + 1);
+      history.push(directory);
+      historyIndex = history.length - 1;
+    }
+    syncControls();
+  });
 }
 
 pathInput.form.addEventListener('submit', event => {
@@ -149,8 +253,26 @@ pathInput.form.addEventListener('submit', event => {
   browse(pathInput.value);
 });
 parentButton.addEventListener('click', () => browse(directory.slice(0, directory.lastIndexOf('/')) || '/'));
+backButton.addEventListener('click', () => {
+  if (historyIndex <= 0) return;
+  run('이전 폴더를 여는 중…', async () => {
+    historyIndex--;
+    await loadDirectory(history[historyIndex]);
+    syncControls();
+  });
+});
+forwardButton.addEventListener('click', () => {
+  if (historyIndex >= history.length - 1) return;
+  run('다음 폴더를 여는 중…', async () => {
+    historyIndex++;
+    await loadDirectory(history[historyIndex]);
+    syncControls();
+  });
+});
+refreshButton.addEventListener('click', () => browse(directory));
 mkdirButton.addEventListener('click', () => openNameDialog('mkdir'));
 fileInput.addEventListener('change', syncControls);
+searchInput.addEventListener('input', renderEntries);
 function uploadFile(file, directory, signal) {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
@@ -246,6 +368,9 @@ if (endpoint) {
     if (info.protocol !== 'ssh') throw new Error('SSH 서버만 파일 관리를 사용할 수 있습니다.');
     document.getElementById('files-title').textContent = `${info.name} 파일 관리`;
     await loadDirectory('.');
+    history = [directory];
+    historyIndex = 0;
+    syncControls();
   });
 } else {
   syncControls();

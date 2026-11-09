@@ -153,6 +153,7 @@ const zoomButtons = mobileInputBar.querySelectorAll('[data-remote-zoom]');
 const vncKeyboardInput = document.getElementById('vnc-keyboard-input');
 const keyboardButton = document.getElementById('btn-mobile-keyboard');
 const sessionMenuButton = document.getElementById('btn-session-menu');
+const mobileInputBarToggle = document.getElementById('btn-toggle-mobile-input-bar');
 const rdpPanButton = document.getElementById('btn-rdp-pan');
 rdpPanButton.addEventListener('click', () => {
   const session = getActiveSession();
@@ -316,6 +317,24 @@ rdpResolution.addEventListener('change', () => {
 const compactViewport = window.matchMedia('(max-width: 900px)');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
 const viewerTools = document.getElementById('viewer-tools');
+const mobileInputBarPreferenceKey = 'remotehub_mobile_input_bar_visible';
+
+function getMobileInputBarPreference() {
+  const stored = localStorage.getItem(mobileInputBarPreferenceKey);
+  return stored === null ? compactViewport.matches : stored === '1';
+}
+
+function setMobileInputBarVisible(visible, persist = true) {
+  if (persist) localStorage.setItem(mobileInputBarPreferenceKey, visible ? '1' : '0');
+  mobileInputBarToggle.setAttribute('aria-pressed', String(visible));
+  mobileInputBarToggle.textContent = `하단 툴바: ${visible ? '표시' : '숨김'}`;
+  mobileInputBar.hidden = !getActiveSession() || !visible;
+}
+
+mobileInputBarToggle.addEventListener('click', () => {
+  setMobileInputBarVisible(mobileInputBarToggle.getAttribute('aria-pressed') !== 'true');
+});
+setMobileInputBarVisible(getMobileInputBarPreference(), false);
 
 // 1. 사이드바 제어 (열기/닫기)
 function setSidebarOpen(open) {
@@ -347,7 +366,12 @@ function setSidebarOpen(open) {
 btnToggleSidebar.addEventListener('click', () => { setSidebarOpen(false); btnOpenSidebar.focus(); });
 btnOpenSidebar.addEventListener('click', () => { setSidebarOpen(true); btnToggleSidebar.focus({ preventScroll: true }); });
 sidebarBackdrop.addEventListener('click', () => { setSidebarOpen(false); btnOpenSidebar.focus(); });
-compactViewport.addEventListener('change', () => setSidebarOpen(!compactViewport.matches && localStorage.getItem('remotehub_sidebar_open') !== '0'));
+compactViewport.addEventListener('change', () => {
+  setSidebarOpen(!compactViewport.matches && localStorage.getItem('remotehub_sidebar_open') !== '0');
+  if (localStorage.getItem(mobileInputBarPreferenceKey) === null) {
+    setMobileInputBarVisible(compactViewport.matches, false);
+  }
+});
 viewerTools.addEventListener('click', event => { if (event.target.closest('button') && !event.target.closest('.ssh-font-controls')) viewerTools.open = false; });
 document.addEventListener('click', event => { if (!viewerTools.contains(event.target)) viewerTools.open = false; });
 document.addEventListener('keydown', event => {
@@ -704,7 +728,7 @@ function updateToolbarForSession(session) {
 
   btnReconnect.disabled = !session || Boolean(session.reconnecting);
   sessionMenuButton.disabled = !session;
-  mobileInputBar.hidden = !session;
+  mobileInputBar.hidden = !session || !getMobileInputBarPreference();
   for (const button of zoomButtons) button.hidden = !session || session.engine === 'ssh';
   for (const button of mobileInputBar.querySelectorAll('button')) button.disabled = session?.status !== 'connected';
   document.getElementById('rdp-resolution-control').hidden = session?.engine !== 'rdp';

@@ -172,7 +172,7 @@ test('Chromium: SSH lifecycle, responsive UI, dialogs, filtered ordering and aut
   let responsesBeforeReload = receivedResponses;
   // Mobile helper keys reach the same live SSH channel.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
-  await waitFor("document.getElementById('mobile-input-bar').getBoundingClientRect().height >= 44");
+  await waitFor("document.getElementById('mobile-input-bar').getBoundingClientRect().height >= 40");
   await evaluate("document.querySelector('[data-terminal-key=Interrupt]').click(); document.querySelector('[data-terminal-key=Tab]').click()");
   const keyDeadline = Date.now() + 3000;
   while (!receivedInput.join('').includes('\x03\t') && Date.now() < keyDeadline) await new Promise(resolve => setTimeout(resolve, 20));
