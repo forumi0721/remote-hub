@@ -59,8 +59,12 @@
     </div>
     <p id="files-status" class="file-status" role="status"></p>
     <div class="file-list-wrap">
-      <div class="file-list-head" aria-hidden="true">
-        <span>이름</span><span>종류</span><span>크기</span><span>수정한 날짜</span><span></span>
+      <div class="file-list-head" role="row">
+        <button type="button" class="file-sort-btn" data-sort="name">이름 <span class="sort-icon"></span></button>
+        <button type="button" class="file-sort-btn" data-sort="type">종류 <span class="sort-icon"></span></button>
+        <button type="button" class="file-sort-btn" data-sort="size">크기 <span class="sort-icon"></span></button>
+        <button type="button" class="file-sort-btn" data-sort="modifiedAt">수정한 날짜 <span class="sort-icon"></span></button>
+        <span>작업</span>
       </div>
       <ul id="files-entries" class="file-entries" aria-label="원격 파일 목록"></ul>
       <div id="files-empty" class="file-empty" hidden>
@@ -83,8 +87,23 @@
     <dialog id="files-name-dialog" aria-labelledby="files-name-title">
       <form id="files-name-form">
         <h2 id="files-name-title"></h2>
-        <label for="files-name">이름</label>
-        <input id="files-name" required autofocus maxlength="255">
+        <div class="form-group">
+          <label for="files-name">이름</label>
+          <input id="files-name" required autofocus maxlength="255">
+        </div>
+        <div id="files-edit-fields" class="form-row-2">
+          <div class="form-group">
+            <label for="files-mode">권한 (8진수, 예: 755)</label>
+            <input id="files-mode" placeholder="예: 755 또는 644" pattern="[0-7]{3,4}">
+          </div>
+          <div class="form-group">
+            <label for="files-owner">소유자 (UID / GID)</label>
+            <div style="display: flex; gap: 0.5rem;">
+              <input id="files-uid" type="number" min="0" max="4294967295" placeholder="UID">
+              <input id="files-gid" type="number" min="0" max="4294967295" placeholder="GID">
+            </div>
+          </div>
+        </div>
         <div class="file-actions">
           <button class="btn btn-secondary" id="files-name-cancel" type="button">취소</button>
           <button class="btn btn-primary" type="submit">확인</button>

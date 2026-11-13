@@ -18,6 +18,10 @@ const fileInput = document.getElementById('files-upload');
 const uploadButton = document.getElementById('files-upload-submit');
 const nameDialog = document.getElementById('files-name-dialog');
 const nameInput = document.getElementById('files-name');
+const modeInput = document.getElementById('files-mode');
+const uidInput = document.getElementById('files-uid');
+const gidInput = document.getElementById('files-gid');
+const editFields = document.getElementById('files-edit-fields');
 const deleteDialog = document.getElementById('files-delete-dialog');
 const transfer = document.getElementById('files-transfer');
 const progress = document.getElementById('files-progress');
@@ -30,6 +34,8 @@ let nameOperation;
 let deleteOperation;
 let uploadController;
 let directoryEntries = [];
+let sortKey = 'name';
+let sortDirection = 'asc';
 let history = [];
 let historyIndex = -1;
 
@@ -121,6 +127,44 @@ function updateBreadcrumbs() {
 function renderEntries() {
   const query = searchInput.value.trim().toLocaleLowerCase();
   const visible = directoryEntries.filter(item => item.name.toLocaleLowerCase().includes(query));
+  
+  // Sort visible items
+  visible.sort((a, b) => {
+    // Keep directories first if desired, or sort strictly by column
+    if (a.type === 'directory' && b.type !== 'directory') return -1;
+    if (a.type !== 'directory' && b.type === 'directory') return 1;
+    let comparison = 0;
+    if (sortKey === 'name') {
+      comparison = a.name.localeCompare(b.name, 'ko', { numeric: true });
+    } else if (sortKey === 'type') {
+      const typeA = a.type === 'directory' ? '폴더' : a.type === 'symlink' ? '링크' : '파일';
+      const typeB = b.type === 'directory' ? '폴더' : b.type === 'symlink' ? '링크' : '파일';
+      comparison = typeA.localeCompare(typeB, 'ko');
+    } else if (sortKey === 'size') {
+      const sizeA = Number.isFinite(a.size) ? a.size : -1;
+      const sizeB = Number.isFinite(b.size) ? b.size : -1;
+      comparison = sizeA - sizeB;
+    } else if (sortKey === 'modifiedAt') {
+      const dateA = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
+      const dateB = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
+      comparison = dateA - dateB;
+    }
+    return sortDirection === 'asc' ? comparison : -comparison;
+  });
+
+  // Update sort button indicators in header
+  for (const btn of document.querySelectorAll('.file-sort-btn')) {
+    const key = btn.dataset.sort;
+    const icon = btn.querySelector('.sort-icon');
+    if (key === sortKey) {
+      btn.classList.add('active-sort');
+      if (icon) icon.textContent = sortDirection === 'asc' ? ' ▲' : ' ▼';
+    } else {
+      btn.classList.remove('active-sort');
+      if (icon) icon.textContent = ' ⇅';
+    }
+  }
+
   entries.replaceChildren();
   emptyState.hidden = visible.length !== 0;
   countText.textContent = `${visible.length}개`;
@@ -141,13 +185,13 @@ function renderEntries() {
     name.textContent = item.name;
     main.append(icon, name);
     const type = document.createElement('span');
-    type.className = 'file-meta';
+    type.className = 'file-meta file-meta-center';
     type.textContent = item.type === 'directory' ? '폴더' : item.type === 'symlink' ? '링크' : '파일';
     const size = document.createElement('span');
-    size.className = 'file-meta';
+    size.className = 'file-meta file-meta-center';
     size.textContent = formatSize(item.size, item.type);
     const modified = document.createElement('span');
-    modified.className = 'file-meta';
+    modified.className = 'file-meta file-meta-center';
     modified.textContent = formatDate(item.modifiedAt);
     const actions = document.createElement('span');
     actions.className = 'file-row-actions';
@@ -159,11 +203,11 @@ function renderEntries() {
       download.setAttribute('aria-label', `${item.name} 다운로드`);
       actions.append(download);
     }
-    const rename = nameButton('이름 변경', () => openNameDialog('rename', item.name));
-    rename.setAttribute('aria-label', `${item.name} 이름 변경`);
+    const edit = nameButton('수정', () => openNameDialog('update', item));
+    edit.setAttribute('aria-label', `${item.name} 수정`);
     const remove = nameButton('삭제', () => openDeleteDialog(item));
     remove.setAttribute('aria-label', `${item.name} 삭제`);
-    actions.append(rename, remove);
+    actions.append(edit, remove);
     row.append(main, type, size, modified, actions);
     const open = () => {
       if (item.type === 'directory' || item.type === 'symlink') browse(inDirectory(item.name));
@@ -190,10 +234,27 @@ function nameButton(label, action) {
   return button;
 }
 
-function openNameDialog(action, name = '') {
-  nameOperation = { action, name, directory };
-  document.getElementById('files-name-title').textContent = action === 'mkdir' ? '새 폴더' : '이름 변경';
-  nameInput.value = name;
+function openNameDialog(action, itemOrName = '') {
+  if (action === 'update' && typeof itemOrName === 'object') {
+    const item = itemOrName;
+    nameOperation = { action, name: item.name, directory, item };
+    document.getElementById('files-name-title').textContent = '파일/폴더 수정';
+    nameInput.value = item.name;
+    editFields.hidden = false;
+    modeInput.required = false;
+    modeInput.value = item.mode ? (item.mode & 0o7777).toString(8) : '';
+    uidInput.value = item.uid !== undefined && item.uid !== null ? item.uid : '';
+    gidInput.value = item.gid !== undefined && item.gid !== null ? item.gid : '';
+  } else {
+    const name = typeof itemOrName === 'string' ? itemOrName : '';
+    nameOperation = { action, name, directory };
+    document.getElementById('files-name-title').textContent = action === 'mkdir' ? '새 폴더' : '이름 변경';
+    nameInput.value = name;
+    editFields.hidden = true;
+    modeInput.value = '';
+    uidInput.value = '';
+    gidInput.value = '';
+  }
   nameDialog.showModal();
   nameInput.select();
 }
@@ -273,6 +334,18 @@ refreshButton.addEventListener('click', () => browse(directory));
 mkdirButton.addEventListener('click', () => openNameDialog('mkdir'));
 fileInput.addEventListener('change', syncControls);
 searchInput.addEventListener('input', renderEntries);
+for (const btn of document.querySelectorAll('.file-sort-btn')) {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.sort;
+    if (sortKey === key) {
+      sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortKey = key;
+      sortDirection = 'asc';
+    }
+    renderEntries();
+  });
+}
 function uploadFile(file, directory, signal) {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
@@ -350,13 +423,36 @@ uploadButton.addEventListener('click', () => {
 document.getElementById('files-name-cancel').addEventListener('click', () => nameDialog.close());
 nameInput.form.addEventListener('submit', event => {
   event.preventDefault();
-  const { action, name, directory: target } = nameOperation;
-  const value = nameInput.value;
-  if (action === 'rename' && value === name) return nameDialog.close();
-  nameDialog.close();
-  run('원격 파일 작업 중…', () => changeFiles({
-    action, directory: target, name: action === 'mkdir' ? value : name, newName: value
-  }));
+  const { action, name, directory: target, item } = nameOperation;
+  const value = nameInput.value.trim();
+
+  if (action === 'mkdir') {
+    nameDialog.close();
+    run('원격 파일 작업 중…', () => changeFiles({
+      action: 'mkdir', directory: target, name: value
+    }));
+  } else if (action === 'rename') {
+    if (value === name) return nameDialog.close();
+    nameDialog.close();
+    run('원격 파일 작업 중…', () => changeFiles({
+      action: 'rename', directory: target, name, newName: value
+    }));
+  } else if (action === 'update') {
+    const rawMode = modeInput.value.trim();
+    const rawUid = uidInput.value.trim();
+    const rawGid = gidInput.value.trim();
+    const payload = {
+      action: 'update',
+      directory: target,
+      name,
+      newName: value !== name ? value : undefined,
+      mode: rawMode ? rawMode : undefined,
+      uid: rawUid !== '' ? Number(rawUid) : undefined,
+      gid: rawGid !== '' ? Number(rawGid) : undefined
+    };
+    nameDialog.close();
+    run('원격 파일 수정 중…', () => changeFiles(payload));
+  }
 });
 
 if (endpoint) {

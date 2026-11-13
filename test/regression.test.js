@@ -313,7 +313,7 @@ test('SFTP lists, transfers and manages files using the saved SSH server', async
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     path: '/home/test',
-    entries: [{ name: '한글.txt', type: 'file', size: 4, modifiedAt: 10 }]
+    entries: [{ name: '한글.txt', type: 'file', size: 4, modifiedAt: 10, mode: 0o100644 }]
   });
   assert.ok(config.getServer(target.id).sshHostKeyFingerprint);
   const writeHeaders = { 'X-RemoteHub-File-Operation': '1' };

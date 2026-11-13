@@ -103,7 +103,10 @@ const listRemoteFiles = withSftp(async (sftp, req, res) => {
       name: filename,
       type: attrs.isDirectory() ? 'directory' : attrs.isSymbolicLink() ? 'symlink' : attrs.isFile() ? 'file' : 'other',
       size: attrs.size,
-      modifiedAt: attrs.mtime
+      modifiedAt: attrs.mtime,
+      mode: attrs.mode,
+      uid: attrs.uid,
+      gid: attrs.gid
     }))
   });
 });
@@ -168,7 +171,7 @@ const uploadRemoteFile = withSftp(async (sftp, req, res, signal) => {
 }, { write: true, transfer: true });
 
 const changeRemoteFiles = withSftp(async (sftp, req, res) => {
-  const { action, directory, name, newName } = req.body;
+  const { action, directory, name, newName, mode, uid, gid } = req.body;
   const path = childPath(remotePath(directory), name);
   if (action === 'mkdir') {
     await ensureAvailable(sftp, path);
@@ -177,6 +180,59 @@ const changeRemoteFiles = withSftp(async (sftp, req, res) => {
     const destination = childPath(directory, newName);
     await ensureAvailable(sftp, destination);
     await call(sftp, 'rename', path, destination);
+  } else if (action === 'update') {
+    let currentPath = path;
+    if (newName && newName !== name) {
+      const destination = childPath(directory, newName);
+      await ensureAvailable(sftp, destination);
+      await call(sftp, 'rename', currentPath, destination);
+      currentPath = destination;
+    }
+    const attrsToUpdate = {};
+    if (mode !== undefined && mode !== null && mode !== '') {
+      let parsedMode;
+      if (typeof mode === 'string') {
+        const trimmed = mode.trim();
+        if (/^[0-7]{3,4}$/.test(trimmed)) {
+          parsedMode = parseInt(trimmed, 8);
+        } else {
+          throw fail(400, '권한은 3~4자리 8진수(예: 755, 0644)여야 합니다.');
+        }
+      } else if (typeof mode === 'number' && Number.isInteger(mode) && mode >= 0 && mode <= 0o7777) {
+        parsedMode = mode;
+      } else {
+        throw fail(400, '유효한 권한 값을 입력해 주세요.');
+      }
+      attrsToUpdate.mode = parsedMode;
+    }
+    const hasUid = uid !== undefined && uid !== null && uid !== '';
+    const hasGid = gid !== undefined && gid !== null && gid !== '';
+    if (hasUid || hasGid) {
+      let parsedUid = null;
+      let parsedGid = null;
+      if (hasUid) {
+        parsedUid = Number(uid);
+        if (!Number.isInteger(parsedUid) || parsedUid < 0 || parsedUid > 4294967295) {
+          throw fail(400, '유효한 UID를 입력해 주세요.');
+        }
+      }
+      if (hasGid) {
+        parsedGid = Number(gid);
+        if (!Number.isInteger(parsedGid) || parsedGid < 0 || parsedGid > 4294967295) {
+          throw fail(400, '유효한 GID를 입력해 주세요.');
+        }
+      }
+      if (!hasUid || !hasGid) {
+        const currentAttrs = await call(sftp, 'stat', currentPath);
+        if (!hasUid) parsedUid = currentAttrs.uid;
+        if (!hasGid) parsedGid = currentAttrs.gid;
+      }
+      attrsToUpdate.uid = parsedUid;
+      attrsToUpdate.gid = parsedGid;
+    }
+    if (Object.keys(attrsToUpdate).length > 0) {
+      await call(sftp, 'setstat', currentPath, attrsToUpdate);
+    }
   } else if (action === 'delete') {
     const attrs = await call(sftp, 'lstat', path);
     if (attrs.isDirectory()) {
